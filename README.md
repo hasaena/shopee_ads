@@ -40,3 +40,17 @@ Endpoints:
 ```powershell
 pytest -q
 ```
+
+## Git Baseline Workflow
+
+Reference:
+- `docs/GIT_AND_OPERATIONS_GUARDRAILS.md`
+
+One-time remote connect:
+```powershell
+.\scripts\connect_github.ps1 -RemoteUrl "https://github.com/<user>/<repo>.git"
+```
+
+Notes:
+- `.env`, token export files, runtime DB/reports/artifacts are ignored by default.
+- Pre-commit secret guard is configured via `.githooks/pre-commit`.

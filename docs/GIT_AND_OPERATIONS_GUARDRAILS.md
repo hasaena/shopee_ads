@@ -19,6 +19,20 @@ If any change can impact (1) or (2), stop and run the release checklist before p
   - product-level campaign: per-campaign supported
   - gms/group/shop-auto: aggregate only
 
+### Protected Integration Surface (high risk)
+
+When changing any of these, require dedicated review and smoke test:
+
+- `src/dotori_shopee_automation/shopee/auth.py`
+- `src/dotori_shopee_automation/shopee/client.py`
+- `src/dotori_shopee_automation/token_preflight_gate.py`
+- `src/dotori_shopee_automation/webapp.py`
+- Apps Script token push function (`refreshAndPushPhase1TokensToServer`)
+
+Rule:
+- Report/UI changes must not change token/auth flow.
+- Token/auth fixes must not change report render logic in the same commit.
+
 ---
 
 ## 3) Common Failure Modes (must avoid)
@@ -62,6 +76,19 @@ Merge rule:
 - verify checklist
 - then release -> main
 
+Recommended command flow:
+
+1. Create feature branch
+   - `git checkout -b feature/<short-topic>`
+2. Work + commit
+3. Merge into release
+   - `git checkout release/phase1-lock`
+   - `git merge --no-ff feature/<short-topic>`
+4. Run release checklist + smoke
+5. Merge release into main
+   - `git checkout main`
+   - `git merge --no-ff release/phase1-lock`
+
 ---
 
 ## 6) Commit Policy
@@ -94,3 +121,7 @@ If live run skipped:
 3. Confirm server token status
 4. Re-run job
 
+If token push says `imported=0 noop=2`:
+1. Treat as success (same token already synced)
+2. Verify current TTL on `/ops/phase1/token/status`
+3. Alert only when TTL is actually below threshold
