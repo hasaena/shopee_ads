@@ -23,7 +23,7 @@ def test_report_summary_no_data_fallback_text() -> None:
 
     summary = build_discord_summary(data, report_url=None)
 
-    assert "Bao cao Ads midday 2026-02-25" in summary
+    assert "Báo cáo Ads midday 2026-02-25" in summary
     assert "no_data=1 rows=0" in summary
 
 
@@ -54,4 +54,4 @@ def test_report_summary_includes_core_metrics_when_rows_exist() -> None:
     assert "orders=210" in summary
     assert "gmv=VND 67,890" in summary
     assert "ROAS=5.50" in summary
-    assert "CTR=1.23%" in summary
+    assert "CTR=0.44%" in summary

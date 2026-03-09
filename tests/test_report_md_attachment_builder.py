@@ -40,8 +40,8 @@ def test_build_report_md_attachment_contains_key_sections(tmp_path: Path, monkey
     assert md_path is not None
     assert md_name == "SAMORD_2026-02-25_midday.md"
     content = Path(md_path).read_text(encoding="utf-8")
-    assert "# SAMORD Bao cao hang ngay (midday)" in content
-    assert "Chi so chinh:" in content
+    assert "# SAMORD Báo cáo hằng ngày (midday)" in content
+    assert "Chỉ số chính:" in content
     assert "Campaign One" in content
     assert "Huong dan mo file local:" in content
     assert "localhost" in content

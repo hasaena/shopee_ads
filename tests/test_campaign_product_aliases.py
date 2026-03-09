@@ -137,7 +137,7 @@ def test_render_daily_html_shows_product_alias(monkeypatch, tmp_path: Path) -> N
     }
 
     html = render_daily_html(data)
-    assert "Hieu suat chien dich" in html
+    assert "Hiệu suất chiến dịch" in html
     assert "Facial Serum / Brand Campaign A" in html
     assert "cmp_1" in html
 

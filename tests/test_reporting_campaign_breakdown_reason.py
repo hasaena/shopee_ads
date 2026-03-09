@@ -74,6 +74,6 @@ def test_render_daily_html_shows_403_campaign_breakdown_message(tmp_path, monkey
     assert data["top_spend"] == []
     assert (
         data.get("campaign_breakdown_note")
-        == "Breakdown theo chien dich bi chan boi API (403 Forbidden). Chi hien thi tong shop."
+        == "Breakdown theo chiến dịch bị chặn bởi API (403 Forbidden). Chỉ hiển thị tổng shop."
     )
-    assert "Tong hop Group/Shop/Auto" in html
+    assert "Tổng hợp Group/Shop/Auto" in html

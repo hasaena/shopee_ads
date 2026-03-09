@@ -76,10 +76,10 @@ def test_ops_smoke_ads_live_fixtures(tmp_path) -> None:
     assert "smoke_ok=1" in stdout
     assert "samord" in stdout
     assert "minmin" in stdout
-    assert "planned_calls: shop_info, ads_daily, ads_snapshot" in stdout
-    assert "mapping_coverage: mapped=3 unmapped=0 missing=[]" in stdout
-    assert "total calls_ok=6 calls_fail=0" in stdout
-    assert "snapshots=2" in stdout
+    assert "planned_calls: shop_info, ads_campaign_list, ads_daily, ads_snapshot" in stdout
+    assert "mapping_coverage: mapped=4 unmapped=0 missing=[]" in stdout
+    assert "total calls_ok=8 calls_fail=0" in stdout
+    assert "snapshots=4" in stdout
     assert "PARTNER_KEY_SHOULD_NOT_PRINT" not in stdout
     assert "ACCESS_TOKEN_SHOULD_NOT_PRINT" not in stdout
     assert "REFRESH_TOKEN_SHOULD_NOT_PRINT" not in stdout

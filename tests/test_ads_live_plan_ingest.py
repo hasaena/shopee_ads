@@ -730,7 +730,7 @@ def test_ads_live_ingest_fixtures_minimal_plan_snapshot_idempotent(
         fixtures_dir=FIXTURE_ROOT,
         client_factory=lambda _: (_ for _ in ()).throw(RuntimeError("should not call")),
     )
-    assert result.calls_ok == 3
+    assert result.calls_ok == 4
     assert result.calls_fail == 0
     assert result.campaigns == 2
     assert result.daily == 2
@@ -752,7 +752,7 @@ def test_ads_live_ingest_fixtures_minimal_plan_snapshot_idempotent(
         fixtures_dir=FIXTURE_ROOT,
         client_factory=lambda _: (_ for _ in ()).throw(RuntimeError("should not call")),
     )
-    assert result_again.calls_ok == 3
+    assert result_again.calls_ok == 4
     assert result_again.calls_fail == 0
     assert result_again.campaigns == 2
     assert result_again.daily == 2

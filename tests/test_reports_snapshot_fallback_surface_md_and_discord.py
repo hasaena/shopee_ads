@@ -59,10 +59,10 @@ def test_snapshot_fallback_surface_in_md_and_discord_when_blocked() -> None:
         data=data,
     )
     assert "## Top campaign (snapshot fallback)" in markdown
-    assert "| Chien dich | Trang thai | Ngan sach | Chi tieu | Con lai | Cap nhat |" in markdown
+    assert "| Chiến dịch | Trạng thái | Ngân sách | Chi tiêu | Còn lại | Cập nhật |" in markdown
     assert "Alpha Campaign Name For Fallback (cmp_a)" in markdown
     assert "| Beta Campaign (cmp_b) | off | VND 500 | VND 900 | VND 0 |" in markdown
-    assert "Du lieu: rank_key=spend" in markdown
+    assert "Dữ liệu: rank_key=spend" in markdown
 
     message = _build_daily_report_discord_message(
         summary="Bao cao Ads midday 2026-02-16: spend=VND 15,346",
@@ -71,8 +71,8 @@ def test_snapshot_fallback_surface_in_md_and_discord_when_blocked() -> None:
         data=data,
     )
     assert "Top snapshot:" in message
-    assert "spend=VND 1,251" in message
-    assert "rem=VND 0" in message
+    assert "chi tiêu=VND 1,251" in message
+    assert "còn lại=VND 0" in message
     snippet_lines = [line for line in message.splitlines() if line.startswith("Top snapshot:")]
     assert snippet_lines
     assert len(snippet_lines[0]) <= 200

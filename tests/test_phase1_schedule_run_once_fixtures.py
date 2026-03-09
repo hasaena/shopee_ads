@@ -113,8 +113,8 @@ def test_phase1_schedule_run_once_fixtures_daily_final(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "phase1_schedule_run_once_ok=1" in result.stdout
-    assert "planned_calls: shop_info, ads_daily" in result.stdout
-    assert "planned_calls: shop_info, ads_daily, ads_snapshot" not in result.stdout
+    assert "planned_calls: shop_info, ads_campaign_list, ads_daily" in result.stdout
+    assert "planned_calls: shop_info, ads_campaign_list, ads_daily, ads_snapshot" not in result.stdout
 
     assert _count_rows(db_path, "ads_campaign") > 0
     assert _count_rows(db_path, "ads_campaign_daily") > 0
@@ -148,7 +148,7 @@ def test_phase1_schedule_run_once_fixtures_daily_midday(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "phase1_schedule_run_once_ok=1" in result.stdout
-    assert "planned_calls: shop_info, ads_daily, ads_snapshot" in result.stdout
+    assert "planned_calls: shop_info, ads_campaign_list, ads_daily, ads_snapshot" in result.stdout
 
     assert _count_rows(db_path, "ads_campaign") > 0
     assert _count_rows(db_path, "ads_campaign_daily") > 0
@@ -228,8 +228,8 @@ def test_daily_final_does_not_increase_snapshot_rows_after_midday(tmp_path: Path
     )
     assert final.returncode == 0, final.stdout + final.stderr
     assert "phase1_schedule_run_once_ok=1" in final.stdout
-    assert "planned_calls: shop_info, ads_daily" in final.stdout
-    assert "planned_calls: shop_info, ads_daily, ads_snapshot" not in final.stdout
+    assert "planned_calls: shop_info, ads_campaign_list, ads_daily" in final.stdout
+    assert "planned_calls: shop_info, ads_campaign_list, ads_daily, ads_snapshot" not in final.stdout
     snapshot_after = _count_rows(db_path, "ads_campaign_snapshot")
     assert snapshot_after == snapshot_before
 

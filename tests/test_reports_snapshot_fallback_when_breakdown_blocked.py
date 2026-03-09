@@ -119,7 +119,7 @@ def test_reports_snapshot_fallback_when_breakdown_blocked(tmp_path, monkeypatch)
     assert int(snapshot_fallback.get("used") or 0) == 1
     assert len(snapshot_fallback.get("rows") or []) >= 1
 
-    assert "Top chien dich theo chi tieu snapshot" in html
+    assert "Top chiến dịch theo chi tiêu snapshot" in html
     assert "Campaign A" in html
     assert "Campaign B" in html
     assert ">cmp_a<" in html

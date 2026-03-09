@@ -13,9 +13,9 @@ def test_report_message_includes_instructions_and_local_file_for_localhost() -> 
         output_path=output_path,
     )
 
-    assert "Discord khong preview file .html" in message
-    assert "link report tro den localhost" in message
-    assert f"File local: {output_path.resolve()}" in message
+    assert "Discord không preview file .html" in message
+    assert "link report trỏ đến localhost" in message
+    assert f"File cục bộ: {output_path.resolve()}" in message
 
 
 def test_report_message_always_contains_local_file_line() -> None:
@@ -26,6 +26,6 @@ def test_report_message_always_contains_local_file_line() -> None:
         output_path=output_path,
     )
 
-    assert "Discord khong preview file .html" in message
-    assert "link report tro den localhost" not in message
-    assert f"File local: {output_path.resolve()}" in message
+    assert "Discord không preview file .html" in message
+    assert "link report trỏ đến localhost" not in message
+    assert f"File cục bộ: {output_path.resolve()}" in message

@@ -88,7 +88,24 @@ def _extract_content(record: dict[str, object]) -> str:
         payload = json.loads(raw.decode("utf-8"))
     except Exception:
         return ""
-    return str(payload.get("content") or "")
+    content = str(payload.get("content") or "")
+    if content:
+        return content
+    embeds = payload.get("embeds")
+    if isinstance(embeds, list) and embeds:
+        first = embeds[0] if isinstance(embeds[0], dict) else {}
+        title = str(first.get("title") or "")
+        description = str(first.get("description") or "")
+        fields = first.get("fields")
+        field_text: list[str] = []
+        if isinstance(fields, list):
+            for row in fields:
+                if isinstance(row, dict):
+                    value = str(row.get("value") or "").strip()
+                    if value:
+                        field_text.append(value)
+        return "\n".join([title, description, *field_text]).strip()
+    return ""
 
 
 def test_doctor_notify_send_local_webhook_smoke(monkeypatch, tmp_path: Path) -> None:
@@ -191,11 +208,9 @@ def test_doctor_notify_send_local_webhook_smoke(monkeypatch, tmp_path: Path) -> 
         assert len(first_records) == 2
 
         contents = [_extract_content(row) for row in first_records]
-        assert any(text.startswith("[SAMORD][ALERT] OPS_DOCTOR") for text in contents)
-        assert any(text.startswith("[MINMIN][ALERT] OPS_DOCTOR") for text in contents)
+        assert any("[SAMORD]" in text and "OPS_DOCTOR" in text for text in contents)
+        assert any("[MINMIN]" in text and "OPS_DOCTOR" in text for text in contents)
         for text in contents:
-            lines = text.splitlines()
-            assert len(lines) == 3
             assert "OPS_DOCTOR" in text
             assert "Reports:" in text
             assert "Next:" in text

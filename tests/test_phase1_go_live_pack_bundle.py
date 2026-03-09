@@ -12,9 +12,12 @@ EXPECTED_MEMBERS = [
     "collaboration/runbooks/PHASE1_STOPLINE.md",
     "collaboration/runbooks/phase1_go_live_checklist.md",
     "collaboration/runbooks/linux_phase1_server_go_live.md",
+    "collaboration/runbooks/phase1_gms_probe_hourly.sh",
     "collaboration/runbooks/systemd/dotori_shopee_automation_phase1.service",
     "collaboration/runbooks/systemd/dotori_shopee_automation_phase1_doctor_notify.service",
     "collaboration/runbooks/systemd/dotori_shopee_automation_phase1_doctor_notify.timer",
+    "collaboration/runbooks/systemd/dotori_shopee_automation_phase1_gms_probe.service",
+    "collaboration/runbooks/systemd/dotori_shopee_automation_phase1_gms_probe.timer",
     "collaboration/runbooks/env/phase1_server.env.example",
     "collaboration/runbooks/appsscript_token_push_access_only.md",
     "collaboration/runbooks/windows_task_scheduler_phase1_doctor_notify.xml",
@@ -55,7 +58,7 @@ def test_phase1_go_live_pack_bundle_contains_fixed_unit(tmp_path: Path) -> None:
     with zipfile.ZipFile(latest_zip, "r") as archive:
         members = archive.namelist()
         assert members == EXPECTED_MEMBERS
-        assert len(members) == 14
+        assert len(members) == 17
         assert "collaboration/runbooks/phase1_go_live_now.md" in members
         assert "collaboration/runbooks/PHASE1_STOPLINE.md" in members
         service_text = archive.read(

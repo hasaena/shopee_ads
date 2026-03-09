@@ -191,6 +191,15 @@ def test_rehearsal_send_posts_to_discord_when_confirmed(monkeypatch, tmp_path: P
     assert any(
         str(item.get("json", {}).get("content", "")).startswith("[SAMORD][ALERT]")
         or str(item.get("json", {}).get("content", "")).startswith("[MINMIN][ALERT]")
+        or (
+            isinstance(item.get("json", {}).get("embeds"), list)
+            and any(
+                "[SAMORD]" in str(embed.get("title", ""))
+                or "[MINMIN]" in str(embed.get("title", ""))
+                for embed in item.get("json", {}).get("embeds", [])
+                if isinstance(embed, dict)
+            )
+        )
         for item in sent
     )
     assert any(

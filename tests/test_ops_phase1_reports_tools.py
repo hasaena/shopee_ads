@@ -4,6 +4,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import date as date_cls, datetime, timedelta
 from pathlib import Path
 
 
@@ -75,6 +76,12 @@ def test_ops_phase1_reports_find_nonzero_day(tmp_path: Path) -> None:
     _write_shops(shops_path)
     db_path = tmp_path / "phase1.db"
 
+    ref_date = date_cls.today()
+    samord_day = ref_date - timedelta(days=2)
+    minmin_day = ref_date - timedelta(days=3)
+    samord_ts = datetime.combine(samord_day, datetime.min.time()).replace(hour=12).isoformat() + "+07:00"
+    minmin_ts = datetime.combine(minmin_day, datetime.min.time()).replace(hour=12).isoformat() + "+07:00"
+
     conn = sqlite3.connect(str(db_path))
     try:
         conn.executescript(
@@ -109,7 +116,7 @@ def test_ops_phase1_reports_find_nonzero_day(tmp_path: Path) -> None:
             (shop_key, campaign_id, ts, spend_today, impressions_today, clicks_today, orders_today, gmv_today)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("samord", "SHOP_TOTAL", "2026-02-20T12:00:00+07:00", 120.0, 1000, 40, 2, 400.0),
+            ("samord", "SHOP_TOTAL", samord_ts, 120.0, 1000, 40, 2, 400.0),
         )
         conn.execute(
             """
@@ -117,7 +124,7 @@ def test_ops_phase1_reports_find_nonzero_day(tmp_path: Path) -> None:
             (shop_key, campaign_id, ts, spend_today, impressions_today, clicks_today, orders_today, gmv_today)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("minmin", "SHOP_TOTAL", "2026-02-19T12:00:00+07:00", 90.0, 800, 30, 1, 220.0),
+            ("minmin", "SHOP_TOTAL", minmin_ts, 90.0, 800, 30, 1, 220.0),
         )
         conn.execute(
             """
@@ -125,7 +132,7 @@ def test_ops_phase1_reports_find_nonzero_day(tmp_path: Path) -> None:
             (shop_key, campaign_id, date, spend, impressions, clicks, orders, gmv)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("samord", "SHOP_TOTAL", "2026-02-20", 120.0, 1000, 40, 2, 400.0),
+            ("samord", "SHOP_TOTAL", samord_day.isoformat(), 120.0, 1000, 40, 2, 400.0),
         )
         conn.commit()
     finally:
@@ -157,8 +164,8 @@ def test_ops_phase1_reports_find_nonzero_day(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "nonzero_day_found shop=samord date=2026-02-20" in result.stdout
+    assert f"nonzero_day_found shop=samord date={samord_day.isoformat()}" in result.stdout
     assert "source=daily" in result.stdout
-    assert "nonzero_day_found shop=minmin date=2026-02-19" in result.stdout
+    assert f"nonzero_day_found shop=minmin date={minmin_day.isoformat()}" in result.stdout
     assert "source=snapshot" in result.stdout
     assert "nonzero_day_scan_ok=1" in result.stdout
