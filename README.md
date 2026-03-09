@@ -57,3 +57,8 @@ Notes:
 - Windows-safe commit:
   - `.\scripts\git_commit_safe.ps1 -Message "type(scope): message"`
   - includes secret guard + baseline mixed-change guard
+
+Repo hygiene helpers:
+- `python scripts/repo_hygiene_audit.py` (runtime clutter + duplicate fixtures report)
+- `.\scripts\cleanup_runtime_local.ps1` (dry-run)
+- `.\scripts\cleanup_runtime_local.ps1 -Apply` (delete local runtime outputs)
