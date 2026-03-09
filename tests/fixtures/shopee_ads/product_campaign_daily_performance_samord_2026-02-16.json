@@ -1,0 +1,42 @@
+{
+  "error": "",
+  "message": "",
+  "response": [
+    {
+      "date": "16-02-2026",
+      "campaign_id": "s_cmp_1",
+      "campaign_name": "Samord Hero",
+      "impression": 1500,
+      "clicks": 44,
+      "direct_order": 2,
+      "broad_order": 1,
+      "direct_gmv": 950000,
+      "broad_gmv": 410000,
+      "expense": 55210
+    },
+    {
+      "date": "16-02-2026",
+      "campaign_id": "s_cmp_2",
+      "campaign_name": "Samord Search",
+      "impression": 980,
+      "clicks": 28,
+      "direct_order": 1,
+      "broad_order": 0,
+      "direct_gmv": 380000,
+      "broad_gmv": 0,
+      "expense": 27120
+    },
+    {
+      "date": "16-02-2026",
+      "campaign_id": "s_cmp_3",
+      "campaign_name": "Samord Retarget",
+      "impression": 740,
+      "clicks": 19,
+      "direct_order": 0,
+      "broad_order": 1,
+      "direct_gmv": 0,
+      "broad_gmv": 220000,
+      "expense": 14160
+    }
+  ]
+}

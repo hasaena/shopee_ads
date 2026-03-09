@@ -1,0 +1,45 @@
+{
+  "samord": {
+    "gms_campaign_perf": {
+      "error": 0,
+      "message": "",
+      "request_id": "fixture_gms_ok_samord",
+      "response": {
+        "records": [
+          {
+            "campaign_id": "gms_1001",
+            "campaign_name": "GMS Group Campaign A",
+            "campaign_type": "gms",
+            "daily_budget": 120000,
+            "spend": 85000
+          },
+          {
+            "campaign_id": "gms_1002",
+            "campaign_name": "GMS Group Campaign B",
+            "campaign_type": "gms",
+            "daily_budget": 90000,
+            "spend": 47000
+          }
+        ]
+      }
+    }
+  },
+  "minmin": {
+    "gms_campaign_perf": {
+      "error": 0,
+      "message": "",
+      "request_id": "fixture_gms_ok_minmin",
+      "response": {
+        "records": [
+          {
+            "campaign_id": "gms_2001",
+            "campaign_name": "GMS Group Campaign C",
+            "campaign_type": "gms",
+            "daily_budget": 100000,
+            "spend": 56000
+          }
+        ]
+      }
+    }
+  }
+}

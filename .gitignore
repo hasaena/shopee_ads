@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+dist/
+
+# Virtualenv
+.venv/
+venv/
+
+# pytest
+.pytest_cache/
+
+# Env files
+.env
+collaboration/env/.env.phase1.local
+
+# DB / local artifacts
+*.db
+dotori.db
+collaboration/*.db
+
+# Runtime outputs (do not version control)
+artifacts/
+reports/
+collaboration/
+
+# Large bundles / exports
+*.zip
+*.tar
+*.tar.gz
+*.pdf
+*.log
+
+# Token exports (Apps Script)
+shopee_tokens_export*.json
+
+# IDE
+.vscode/
+.idea/

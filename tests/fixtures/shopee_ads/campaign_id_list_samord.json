@@ -1,0 +1,24 @@
+{
+  "error": "",
+  "message": "",
+  "response": {
+    "campaign_list": [
+      {
+        "campaign_id": "s_cmp_1",
+        "campaign_name": "Samord Hero"
+      },
+      {
+        "campaign_id": "s_cmp_2",
+        "campaign_name": "Samord Search"
+      },
+      {
+        "campaign_id": "s_cmp_3",
+        "campaign_name": "Samord Retarget"
+      }
+    ],
+    "total": 3,
+    "page_no": 1,
+    "page_size": 100,
+    "has_next": false
+  }
+}

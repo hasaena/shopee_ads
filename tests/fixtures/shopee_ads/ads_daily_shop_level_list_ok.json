@@ -1,0 +1,16 @@
+{
+  "error": "",
+  "message": "",
+  "response": [
+    {
+      "date": "16-02-2026",
+      "impression": 1990,
+      "clicks": 52,
+      "direct_order": 1,
+      "broad_order": 2,
+      "direct_gmv": 445000,
+      "broad_gmv": 890000,
+      "expense": 71235
+    }
+  ]
+}

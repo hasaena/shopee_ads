@@ -1,0 +1,16 @@
+# Example shops config
+# Root is a list of shops.
+
+- shop_key: shop_a
+  label: SHOP_A
+  enabled: true
+  # timezone: Asia/Ho_Chi_Minh
+  # shopee_shop_id: 123456789
+  # Optional webhook override (prefer env vars):
+  # discord_webhook_url: https://discord.com/api/webhooks/...
+  targets: {}
+
+- shop_key: shop_b
+  label: SHOP_B
+  enabled: false
+  targets: {}

@@ -1,0 +1,24 @@
+{
+  "error": "",
+  "message": "",
+  "response": {
+    "campaign_list": [
+      {
+        "campaign_id": "m_cmp_1",
+        "campaign_name": "Minmin Hero"
+      },
+      {
+        "campaign_id": "m_cmp_2",
+        "campaign_name": "Minmin Search"
+      },
+      {
+        "campaign_id": "m_cmp_3",
+        "campaign_name": "Minmin Retarget"
+      }
+    ],
+    "total": 3,
+    "page_no": 1,
+    "page_size": 100,
+    "has_next": false
+  }
+}

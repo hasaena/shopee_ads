@@ -1,0 +1,27 @@
+{
+  "error": 0,
+  "response": {
+    "records": [
+      {
+        "campaign_id": "c1",
+        "campaign_name": "Campaign One",
+        "date": "2026-02-03",
+        "spend": "12.34",
+        "impressions": 100,
+        "clicks": 10,
+        "orders": 2,
+        "gmv": "56.78"
+      },
+      {
+        "campaign_id": "c2",
+        "campaign_name": "Campaign Two",
+        "date": "2026-02-03",
+        "spend": "5.00",
+        "impressions": 50,
+        "clicks": 5,
+        "orders": 1,
+        "gmv": "12.00"
+      }
+    ]
+  }
+}

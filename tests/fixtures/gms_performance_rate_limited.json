@@ -1,0 +1,30 @@
+{
+  "samord": {
+    "gms_campaign_perf": {
+      "error": "ads_rate_limit_total_api",
+      "message": "ads_rate_limit_total_api",
+      "request_id": "fixture_gms_rl_samord",
+      "__trace": {
+        "http_status": 403,
+        "rate_limited": 1,
+        "api_error": "ads_rate_limit_total_api",
+        "api_message": "ads_rate_limit_total_api"
+      },
+      "response": {}
+    }
+  },
+  "minmin": {
+    "gms_campaign_perf": {
+      "error": "ads_rate_limit_total_api",
+      "message": "ads_rate_limit_total_api",
+      "request_id": "fixture_gms_rl_minmin",
+      "__trace": {
+        "http_status": 403,
+        "rate_limited": 1,
+        "api_error": "ads_rate_limit_total_api",
+        "api_message": "ads_rate_limit_total_api"
+      },
+      "response": {}
+    }
+  }
+}

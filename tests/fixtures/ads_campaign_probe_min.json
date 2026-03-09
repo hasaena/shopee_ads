@@ -1,0 +1,46 @@
+{
+  "samord": {
+    "campaign_id_list": {
+      "error": 0,
+      "message": "",
+      "response": {
+        "campaign_list": [
+          {
+            "campaign_id": 1001,
+            "ad_type": "manual"
+          }
+        ]
+      }
+    },
+    "setting_info": {
+      "error": 0,
+      "message": "",
+      "response": {
+        "campaign_list": [
+          {
+            "campaign_id": 1001,
+            "common_info": {
+              "ad_name": "Sample Campaign",
+              "campaign_status": "ongoing",
+              "campaign_budget": 100000,
+              "campaign_duration": {
+                "start_time": 1700000000,
+                "end_time": 1700600000
+              },
+              "item_id_list": [
+                11111111111
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "gms_campaign_perf": {
+      "error": 0,
+      "message": "",
+      "response": {
+        "records": []
+      }
+    }
+  }
+}

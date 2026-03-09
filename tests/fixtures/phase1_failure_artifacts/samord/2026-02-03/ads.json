@@ -1,0 +1,6 @@
+{
+  "__meta": {"shop_key": "samord", "call_name": "ads_daily"},
+  "request_meta": {"path": "/api/v2/ads/get_all_cpc_ads_daily_performance", "query_keys": ["partner_id", "timestamp"]},
+  "response_meta": {"http_status": 403},
+  "parsed_error": {"api_error": "auth_failed", "api_message": "denied", "request_id": "req-ads"}
+}

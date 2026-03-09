@@ -1,0 +1,8 @@
+{
+  "error": "",
+  "message": "success",
+  "request_id": "fixture-ads-campaign-list",
+  "response": {
+    "records": []
+  }
+}

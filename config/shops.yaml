@@ -1,0 +1,25 @@
+- shop_key: samord
+  label: SAMORD
+  enabled: true
+  timezone: Asia/Ho_Chi_Minh
+  shopee_shop_id: 111111
+  discord_webhook_url:
+  targets: {}
+- shop_key: minmin
+  label: MINMIN
+  enabled: true
+  timezone: Asia/Ho_Chi_Minh
+  shopee_shop_id: 222222
+  discord_webhook_url:
+  targets: {}
+- shop_key: shop_a
+  label: SHOP_A
+  enabled: false
+  timezone: Asia/Ho_Chi_Minh
+  shopee_shop_id: 123456789
+  discord_webhook_url:
+  targets: {}
+- shop_key: shop_b
+  label: SHOP_B
+  enabled: false
+  targets: {}

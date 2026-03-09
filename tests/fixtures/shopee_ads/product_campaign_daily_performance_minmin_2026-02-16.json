@@ -1,0 +1,42 @@
+{
+  "error": "",
+  "message": "",
+  "response": [
+    {
+      "date": "16-02-2026",
+      "campaign_id": "m_cmp_1",
+      "campaign_name": "Minmin Hero",
+      "impression": 1320,
+      "clicks": 35,
+      "direct_order": 1,
+      "broad_order": 1,
+      "direct_gmv": 420000,
+      "broad_gmv": 360000,
+      "expense": 40150
+    },
+    {
+      "date": "16-02-2026",
+      "campaign_id": "m_cmp_2",
+      "campaign_name": "Minmin Search",
+      "impression": 860,
+      "clicks": 23,
+      "direct_order": 0,
+      "broad_order": 1,
+      "direct_gmv": 0,
+      "broad_gmv": 190000,
+      "expense": 21430
+    },
+    {
+      "date": "16-02-2026",
+      "campaign_id": "m_cmp_3",
+      "campaign_name": "Minmin Retarget",
+      "impression": 640,
+      "clicks": 17,
+      "direct_order": 0,
+      "broad_order": 0,
+      "direct_gmv": 0,
+      "broad_gmv": 0,
+      "expense": 9630
+    }
+  ]
+}

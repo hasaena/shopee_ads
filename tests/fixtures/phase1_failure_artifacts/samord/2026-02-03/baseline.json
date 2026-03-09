@@ -1,0 +1,6 @@
+{
+  "__meta": {"shop_key": "samord", "call_name": "baseline_shop_info"},
+  "request_meta": {"path": "/api/v2/shop/get_shop_info", "query_keys": ["partner_id", "timestamp"]},
+  "response_meta": {"http_status": 200},
+  "parsed_error": {"api_error": 0, "api_message": "success", "request_id": "req-base"}
+}
