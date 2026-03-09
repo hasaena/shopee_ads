@@ -160,6 +160,26 @@ def test_wow_delta_missing(tmp_path, monkeypatch) -> None:
     assert wow is None
 
 
+def test_weekly_discord_message_wow_has_spaced_equals_and_signed_pct() -> None:
+    metrics = {
+        "totals": {"spend": Decimal("100"), "orders": 2, "gmv": Decimal("500")},
+        "kpis": {"roas": Decimal("5")},
+    }
+    wow_delta = {
+        "spend_pct": Decimal("0.277"),
+        "gmv_pct": Decimal("-0.1101"),
+        "roas_pct": Decimal("-0.3031"),
+    }
+    message = build_weekly_discord_message(
+        "SHOP_A",
+        "2026-W10",
+        metrics,
+        wow_delta,
+        None,
+    )
+    assert "So với tuần trước: spend= +27.70% gmv= -11.01% roas= -30.31%" in message
+
+
 def test_incident_summary(tmp_path, monkeypatch) -> None:
     _setup_db(tmp_path, monkeypatch)
     start_date = date(2026, 1, 26)

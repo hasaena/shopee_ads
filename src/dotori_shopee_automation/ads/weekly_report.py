@@ -554,10 +554,10 @@ def build_weekly_discord_message(
     )
     if wow_delta:
         lines.append(
-            "So với tuần trước: spend={} gmv={} roas={}".format(
-                _fmt_pct(wow_delta.get("spend_pct")),
-                _fmt_pct(wow_delta.get("gmv_pct")),
-                _fmt_pct(wow_delta.get("roas_pct")),
+            "So với tuần trước: spend= {} gmv= {} roas= {}".format(
+                _fmt_pct_delta(wow_delta.get("spend_pct")),
+                _fmt_pct_delta(wow_delta.get("gmv_pct")),
+                _fmt_pct_delta(wow_delta.get("roas_pct")),
             )
         )
     if report_url:
@@ -1381,6 +1381,17 @@ def _fmt_pct(value: Decimal | None) -> str:
     if value is None:
         return "-"
     return _quantize(value * Decimal("100"), 2) + "%"
+
+
+def _fmt_pct_delta(value: Decimal | None) -> str:
+    if value is None:
+        return "-"
+    pct = _to_decimal(value) * Decimal("100")
+    if pct > 0:
+        return "+" + _quantize(pct, 2) + "%"
+    if pct < 0:
+        return _quantize(pct, 2) + "%"
+    return _quantize(pct, 2) + "%"
 
 
 def _quantize(value: Decimal, places: int) -> str:
