@@ -46,6 +46,7 @@ pytest -q
 Reference:
 - `docs/GIT_AND_OPERATIONS_GUARDRAILS.md`
 - `docs/BASELINE_SCOPE.md`
+- `docs/GITHUB_SECURITY_SETUP.md`
 
 One-time remote connect:
 ```powershell
@@ -62,3 +63,4 @@ Repo hygiene helpers:
 - `python scripts/repo_hygiene_audit.py` (runtime clutter + duplicate fixtures report)
 - `.\scripts\cleanup_runtime_local.ps1` (dry-run)
 - `.\scripts\cleanup_runtime_local.ps1 -Apply` (delete local runtime outputs)
+- `.\scripts\git_security_status.ps1` (print git identity/remote/safety config)
