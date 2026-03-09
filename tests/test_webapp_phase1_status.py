@@ -579,6 +579,90 @@ def test_phase1_status_freshness_flags_and_issues_for_stale_data(monkeypatch, tm
     get_settings.cache_clear()
 
 
+def test_phase1_status_report_latest_prefers_report_date_over_mtime(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _configure_test_env(monkeypatch, tmp_path)
+    fixed_now = datetime(2026, 3, 9, 5, 7, 12, tzinfo=timezone.utc)
+    _seed_tokens_and_gate_status(now=fixed_now)
+    _seed_ads_freshness_rows(now=fixed_now)
+    reports_root = tmp_path / "reports"
+
+    # Old date file has newer mtime (simulating re-render of old final).
+    _write_report_file(
+        reports_root / "minmin" / "daily" / "2026-03-05_final.html",
+        "<html>old-date-but-newer-mtime</html>",
+        int((fixed_now + timedelta(hours=1)).timestamp()),
+    )
+    # Newest final date has older mtime.
+    _write_report_file(
+        reports_root / "minmin" / "daily" / "2026-03-08_final.html",
+        "<html>newest-date</html>",
+        int((fixed_now - timedelta(hours=1)).timestamp()),
+    )
+    # Keep samord minimally populated to avoid report-missing noise side effects.
+    _write_report_file(
+        reports_root / "samord" / "daily" / "2026-03-08_final.html",
+        "<html>samord final</html>",
+        int((fixed_now - timedelta(hours=1)).timestamp()),
+    )
+
+    monkeypatch.setattr(webapp, "_now_utc", lambda: fixed_now)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/ops/phase1/status",
+            headers={"Authorization": "Bearer ops-secret"},
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert (
+        data["reports"]["latest"]["minmin"]["daily_final"]["relpath"]
+        == "minmin/daily/2026-03-08_final.html"
+    )
+    get_settings.cache_clear()
+
+
+def test_phase1_status_report_lag_daily_final_issue(monkeypatch, tmp_path: Path) -> None:
+    _configure_test_env(monkeypatch, tmp_path)
+    fixed_now = datetime(2026, 2, 25, 5, 7, 12, tzinfo=timezone.utc)  # local 12:07
+    _seed_tokens_and_gate_status(now=fixed_now)
+    _seed_ads_freshness_rows(now=fixed_now)
+    reports_root = tmp_path / "reports"
+
+    _write_report_file(
+        reports_root / "samord" / "daily" / "2026-02-20_final.html",
+        "<html>lagged final</html>",
+        int((fixed_now - timedelta(minutes=5)).timestamp()),
+    )
+    _write_report_file(
+        reports_root / "samord" / "daily" / "2026-02-25_midday.html",
+        "<html>current midday</html>",
+        int((fixed_now - timedelta(minutes=5)).timestamp()),
+    )
+    _write_report_file(
+        reports_root / "minmin" / "daily" / "2026-02-24_final.html",
+        "<html>normal final</html>",
+        int((fixed_now - timedelta(minutes=5)).timestamp()),
+    )
+
+    monkeypatch.setattr(webapp, "_now_utc", lambda: fixed_now)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/ops/phase1/status",
+            headers={"Authorization": "Bearer ops-secret"},
+        )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    issues = {(row["shop"], row["code"]) for row in data["issues"]}
+    assert ("samord", "REPORT_LAG_DAILY_FINAL") in issues
+    assert ("minmin", "REPORT_LAG_DAILY_FINAL") not in issues
+    get_settings.cache_clear()
+
+
 def test_phase1_status_report_relpath_traversal_prevention(tmp_path: Path) -> None:
     reports_root = tmp_path / "reports"
     reports_root.mkdir(parents=True, exist_ok=True)

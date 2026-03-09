@@ -5,6 +5,7 @@ from datetime import date as date_type, datetime, time, timedelta, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -20,11 +21,6 @@ from sqlalchemy import func
 from . import __version__
 from .ads.campaign_probe import read_ads_rate_limit_status, resolve_rate_limit_state_path_info
 from .ads.models import AdsCampaign, AdsCampaignDaily, AdsCampaignSnapshot
-from .ads.reporting import (
-    BREAKDOWN_SCOPE_NOTE,
-    BREAKDOWN_SCOPE_PRODUCT_LEVEL_ONLY,
-    GMS_GROUP_SCOPE_AGGREGATE_ONLY,
-)
 from .config import get_settings, load_shops
 from .db import EventLog, SessionLocal, init_db
 from .discord_notifier import build_report_url
@@ -35,6 +31,21 @@ from .token_preflight_gate import (
     evaluate_token_preflight_gate,
     load_token_preflight_gate_status_snapshot,
 )
+
+try:
+    from .ads.reporting import (
+        BREAKDOWN_SCOPE_NOTE,
+        BREAKDOWN_SCOPE_PRODUCT_LEVEL_ONLY,
+        GMS_GROUP_SCOPE_AGGREGATE_ONLY,
+    )
+except Exception:
+    # Keep webapp import-safe across mixed production revisions.
+    BREAKDOWN_SCOPE_PRODUCT_LEVEL_ONLY = "product_level_only"
+    GMS_GROUP_SCOPE_AGGREGATE_ONLY = "aggregate_only"
+    BREAKDOWN_SCOPE_NOTE = (
+        "product-level campaigns are per-campaign; "
+        "group/shop/auto-selected scopes are aggregate-only"
+    )
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -827,7 +838,33 @@ def _pick_latest_html_file(directory: Path, pattern: str) -> Path | None:
     candidates = [path for path in directory.glob(pattern) if path.is_file()]
     if not candidates:
         return None
-    candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+
+    def _daily_date_key(path: Path) -> tuple[int, int, int] | None:
+        match = re.match(r"^(\d{4})-(\d{2})-(\d{2})_(?:midday|final)\.html$", path.name)
+        if not match:
+            return None
+        return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+    def _weekly_key(path: Path) -> tuple[int, int] | None:
+        match = re.match(r"^(\d{4})-W(\d{2})\.html$", path.name)
+        if not match:
+            return None
+        return (int(match.group(1)), int(match.group(2)))
+
+    def _sort_key(path: Path) -> tuple[int, tuple[int, ...], float]:
+        # Prefer report-id chronology over mtime so re-rendering an old day
+        # does not move "latest" pointers backwards.
+        if pattern in {"*_midday.html", "*_final.html"}:
+            parsed = _daily_date_key(path)
+            if parsed is not None:
+                return (2, parsed, float(path.stat().st_mtime))
+        elif pattern == "*.html":
+            parsed_week = _weekly_key(path)
+            if parsed_week is not None:
+                return (1, parsed_week, float(path.stat().st_mtime))
+        return (0, (), float(path.stat().st_mtime))
+
+    candidates.sort(key=_sort_key, reverse=True)
     return candidates[0]
 
 
@@ -1092,6 +1129,28 @@ def _make_issue(*, shop: str, code: str, severity: str, hint: str) -> dict[str, 
     }
 
 
+def _extract_daily_report_date_from_pointer(
+    pointer: object,
+    *,
+    kind: str,
+) -> date_type | None:
+    if not isinstance(pointer, dict):
+        return None
+    relpath = str(pointer.get("relpath") or "").strip()
+    if not relpath:
+        return None
+    name = Path(relpath).name
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})_(midday|final)\.html$", name)
+    if not match:
+        return None
+    if match.group(2) != kind:
+        return None
+    try:
+        return date_type.fromisoformat(match.group(1))
+    except ValueError:
+        return None
+
+
 def _build_phase1_issues(
     *,
     token_payload: dict[str, Any],
@@ -1099,8 +1158,16 @@ def _build_phase1_issues(
     reports_payload: dict[str, Any],
     freshness_payload: dict[str, Any],
     ads_rate_limit_config: dict[str, Any],
+    now_utc: datetime,
 ) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
+    now_local = now_utc.astimezone(OPS_TIMEZONE)
+    expected_final_date = now_local.date() - timedelta(days=1)
+    expected_midday_date = (
+        now_local.date()
+        if (now_local.hour, now_local.minute) >= (13, 0)
+        else now_local.date() - timedelta(days=1)
+    )
     freshness_per_shop = (
         freshness_payload.get("per_shop", {}) if isinstance(freshness_payload, dict) else {}
     )
@@ -1250,6 +1317,38 @@ def _build_phase1_issues(
                     )
                 )
 
+        final_pointer = report_row.get("daily_final") if isinstance(report_row, dict) else None
+        final_date = _extract_daily_report_date_from_pointer(final_pointer, kind="final")
+        if final_date is not None and final_date < expected_final_date:
+            issues.append(
+                _make_issue(
+                    shop=shop_key,
+                    code="REPORT_LAG_DAILY_FINAL",
+                    severity="warn",
+                    hint=(
+                        f"latest_final={final_date.isoformat()} "
+                        f"expected_at_least={expected_final_date.isoformat()}; "
+                        "run daily-final scheduler/reconcile"
+                    ),
+                )
+            )
+
+        midday_pointer = report_row.get("daily_midday") if isinstance(report_row, dict) else None
+        midday_date = _extract_daily_report_date_from_pointer(midday_pointer, kind="midday")
+        if midday_date is not None and midday_date < expected_midday_date:
+            issues.append(
+                _make_issue(
+                    shop=shop_key,
+                    code="REPORT_LAG_DAILY_MIDDAY",
+                    severity="info",
+                    hint=(
+                        f"latest_midday={midday_date.isoformat()} "
+                        f"expected_at_least={expected_midday_date.isoformat()}; "
+                        "run daily-midday scheduler/reconcile"
+                    ),
+                )
+            )
+
         if not db_ok:
             issues.append(
                 _make_issue(
@@ -1296,6 +1395,7 @@ def build_phase1_status_payload(*, now_utc: datetime | None = None) -> dict[str,
         reports_payload=reports_payload,
         freshness_payload=freshness_payload,
         ads_rate_limit_config=ads_rate_limit_config,
+        now_utc=now_value,
     )
     blocked_shops = [
         shop_key
