@@ -1,5 +1,6 @@
 param(
-  [string]$DefaultBranch = "main"
+  [string]$DefaultBranch = "main",
+  [switch]$EnableHooks
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,7 +11,11 @@ if (-not (Test-Path ".git")) {
   & $git[0] $git[1] $git[2] init
 }
 
-& $git[0] $git[1] $git[2] config core.hooksPath .githooks
+if ($EnableHooks) {
+  & $git[0] $git[1] $git[2] config core.hooksPath .githooks
+} else {
+  & $git[0] $git[1] $git[2] config --unset core.hooksPath 2>$null
+}
 
 $current = & $git[0] $git[1] $git[2] branch --show-current 2>$null
 if (-not $current) {
@@ -18,4 +23,8 @@ if (-not $current) {
 }
 
 Write-Host "Git repository bootstrap complete."
-Write-Host "hooksPath=.githooks configured."
+if ($EnableHooks) {
+  Write-Host "hooksPath=.githooks configured."
+} else {
+  Write-Host "hooksPath disabled (use scripts/git_commit_safe.ps1 on Windows)."
+}

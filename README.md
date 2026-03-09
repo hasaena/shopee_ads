@@ -53,4 +53,5 @@ One-time remote connect:
 
 Notes:
 - `.env`, token export files, runtime DB/reports/artifacts are ignored by default.
-- Pre-commit secret guard is configured via `.githooks/pre-commit`.
+- Windows-safe commit:
+  - `.\scripts\git_commit_safe.ps1 -Message "type(scope): message"`

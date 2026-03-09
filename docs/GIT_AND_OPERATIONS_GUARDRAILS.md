@@ -104,6 +104,10 @@ Recommended command flow:
   - DB files
   - runtime reports/artifacts/logs
 
+Windows-safe commit command:
+- `.\scripts\git_commit_safe.ps1 -Message "type(scope): message"`
+- Optional auto-stage: `.\scripts\git_commit_safe.ps1 -Message "..." -AddAll`
+
 ---
 
 ## 7) Incident Playbook (quick)
