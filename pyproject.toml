@@ -28,7 +28,10 @@ dev = [
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-packages = ["dotori_shopee_automation", "dotori_shopee_automation.ads", "dotori_shopee_automation.shopee"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["dotori_shopee_automation*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

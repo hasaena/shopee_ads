@@ -108,6 +108,10 @@ Windows-safe commit command:
 - `.\scripts\git_commit_safe.ps1 -Message "type(scope): message"`
 - Optional auto-stage: `.\scripts\git_commit_safe.ps1 -Message "..." -AddAll`
 
+Guards executed before commit:
+- `scripts/git_secret_guard.py` (secrets)
+- `scripts/baseline_guard.py` (block risky mixed auth+report commit)
+
 ---
 
 ## 7) Incident Playbook (quick)

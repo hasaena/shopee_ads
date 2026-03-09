@@ -45,6 +45,7 @@ pytest -q
 
 Reference:
 - `docs/GIT_AND_OPERATIONS_GUARDRAILS.md`
+- `docs/BASELINE_SCOPE.md`
 
 One-time remote connect:
 ```powershell
@@ -55,3 +56,4 @@ Notes:
 - `.env`, token export files, runtime DB/reports/artifacts are ignored by default.
 - Windows-safe commit:
   - `.\scripts\git_commit_safe.ps1 -Message "type(scope): message"`
+  - includes secret guard + baseline mixed-change guard

@@ -22,5 +22,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "Secret guard failed. Commit blocked."
 }
 
+python scripts/baseline_guard.py
+if ($LASTEXITCODE -ne 0) {
+    throw "Baseline guard failed. Split risky mixed commit."
+}
+
 # --no-verify avoids shell hook failures on some Windows Git environments.
 git commit --no-verify -m $Message
