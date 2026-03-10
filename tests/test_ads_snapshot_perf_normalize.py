@@ -35,8 +35,8 @@ def test_normalize_snapshot_perf_response_list_shape() -> None:
     assert row.get("spend_today") == 71235
     assert row.get("impressions_today") == 1990
     assert row.get("clicks_today") == 52
-    assert row.get("orders_today") == 3
-    assert row.get("gmv_today") == 1335000.0
+    assert row.get("orders_today") == 1
+    assert row.get("gmv_today") == 445000
     assert row.get("ts") == "2026-02-16T10:15:16+00:00"
 
 
@@ -68,8 +68,8 @@ def test_normalize_daily_response_list_shape_shop_total() -> None:
     assert row.get("spend") == 71235
     assert row.get("impressions") == 1990
     assert row.get("clicks") == 52
-    assert row.get("orders") == 3
-    assert row.get("gmv") == 1335000.0
+    assert row.get("orders") == 1
+    assert row.get("gmv") == 445000
 
 
 def test_normalize_daily_response_campaign_list_metrics_shape() -> None:

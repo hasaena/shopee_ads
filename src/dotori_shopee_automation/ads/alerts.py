@@ -20,6 +20,9 @@ _DAY_SCOPED_INCIDENT_TYPES = {
     "pacing_underspend",
     "health_no_impressions",
     "health_spend_no_orders",
+    "spend_spike_60m",
+    "ctr_drop_60m",
+    "cvr_drop_60m",
 }
 
 
@@ -58,6 +61,7 @@ def detect_alerts(shop_key: str, now: datetime, session) -> DetectionResult:
             AdsCampaignSnapshot.clicks_today,
             AdsCampaignSnapshot.orders_today,
             AdsCampaignSnapshot.gmv_today,
+            AdsCampaign.status,
             AdsCampaign.daily_budget,
         )
         .join(
@@ -88,14 +92,16 @@ def detect_alerts(shop_key: str, now: datetime, session) -> DetectionResult:
             {
                 "campaign_id": campaign_id,
                 "campaign_name": campaign_name,
-                "daily_budget": row[8],
+                "campaign_status": row[8],
+                "daily_budget": row[9],
                 "latest": None,
                 "window_earliest": None,
                 "window_latest": None,
                 "baseline_before_window": None,
             },
         )
-        entry["daily_budget"] = row[8]
+        entry["campaign_status"] = row[8]
+        entry["daily_budget"] = row[9]
 
         latest = entry["latest"]
         if latest is None or ts > latest["ts"]:
@@ -126,6 +132,9 @@ def detect_alerts(shop_key: str, now: datetime, session) -> DetectionResult:
     for entry in campaigns.values():
         latest = entry["latest"]
         if latest is None:
+            continue
+        campaign_status = str(entry.get("campaign_status") or "").strip().upper()
+        if campaign_status in {"PAUSED", "STOPPED", "ENDED", "INACTIVE", "DELETED"}:
             continue
         budget = entry["daily_budget"]
         if budget is not None:
@@ -224,19 +233,20 @@ def detect_alerts(shop_key: str, now: datetime, session) -> DetectionResult:
                     )
 
             # Rule 3: no impressions
-            if impr_delta == 0 and (impressions_today == 0 or click_delta == 0):
+            if spend_delta >= Decimal("1000") and impr_delta <= 0 and click_delta == 0:
                 alerts.append(
                     ActiveAlert(
                         incident_type="health_no_impressions",
                         entity_type="campaign",
                         entity_id=entry["campaign_id"],
                         severity="WARN",
-                        title="Khong co impression moi trong 60 phut gan nhat",
+                        title="Hieu qua hien thi thap trong 60 phut gan nhat",
                         campaign_name=entry["campaign_name"],
                         shop_key=shop_key,
                         meta={
                             "impr_delta": impr_delta,
                             "click_delta": click_delta,
+                            "spend_delta": spend_delta,
                             "impressions_today": impressions_today,
                             "totals_source": "ads_campaign_daily(shop_total_or_campaign_sum)",
                         },
@@ -266,10 +276,92 @@ def detect_alerts(shop_key: str, now: datetime, session) -> DetectionResult:
                             "spend_delta": spend_delta,
                             "orders_delta": orders_delta,
                             "daily_budget": budget,
+                                "totals_source": "ads_campaign_daily(shop_total_or_campaign_sum)",
+                            },
+                        )
+                    )
+
+            # Rule 5: spend spike in last 60m
+            spend_spike_warn = Decimal("30000")
+            spend_spike_critical = Decimal("50000")
+            if budget and budget > 0:
+                spend_spike_warn = max(spend_spike_warn, budget * Decimal("0.18"))
+                spend_spike_critical = max(spend_spike_critical, budget * Decimal("0.30"))
+            if spend_delta >= spend_spike_warn:
+                severity = "WARN"
+                if spend_delta >= spend_spike_critical:
+                    severity = "CRITICAL"
+                alerts.append(
+                    ActiveAlert(
+                        incident_type="spend_spike_60m",
+                        entity_type="campaign",
+                        entity_id=entry["campaign_id"],
+                        severity=severity,
+                        title="Chi tieu tang dot bien trong 60 phut",
+                        campaign_name=entry["campaign_name"],
+                        shop_key=shop_key,
+                        meta={
+                            "spend_delta": spend_delta,
+                            "warn_threshold": spend_spike_warn,
+                            "critical_threshold": spend_spike_critical,
                             "totals_source": "ads_campaign_daily(shop_total_or_campaign_sum)",
                         },
                     )
                 )
+
+            # Rule 6: CTR drop in last 60m (independent from no-impression incident)
+            if impr_delta >= 500 and spend_delta >= Decimal("10000"):
+                ctr_60m = Decimal("0")
+                if impr_delta > 0:
+                    ctr_60m = (Decimal(click_delta) / Decimal(impr_delta)) * Decimal("100")
+                ctr_threshold = Decimal("0.80")
+                if ctr_60m < ctr_threshold:
+                    alerts.append(
+                        ActiveAlert(
+                            incident_type="ctr_drop_60m",
+                            entity_type="campaign",
+                            entity_id=entry["campaign_id"],
+                            severity="WARN",
+                            title="CTR giam bat thuong trong 60 phut",
+                            campaign_name=entry["campaign_name"],
+                            shop_key=shop_key,
+                            meta={
+                                "ctr_60m": ctr_60m,
+                                "ctr_threshold": ctr_threshold,
+                                "impr_delta": impr_delta,
+                                "click_delta": click_delta,
+                                "spend_delta": spend_delta,
+                                "totals_source": "ads_campaign_daily(shop_total_or_campaign_sum)",
+                            },
+                        )
+                    )
+
+            # Rule 7: CVR drop in last 60m (independent from spend-no-orders incident)
+            if click_delta >= 30 and spend_delta >= Decimal("10000"):
+                cvr_60m = Decimal("0")
+                if click_delta > 0:
+                    cvr_60m = (Decimal(orders_delta) / Decimal(click_delta)) * Decimal("100")
+                cvr_threshold = Decimal("0.50")
+                if cvr_60m < cvr_threshold:
+                    alerts.append(
+                        ActiveAlert(
+                            incident_type="cvr_drop_60m",
+                            entity_type="campaign",
+                            entity_id=entry["campaign_id"],
+                            severity="WARN",
+                            title="CVR giam bat thuong trong 60 phut",
+                            campaign_name=entry["campaign_name"],
+                            shop_key=shop_key,
+                            meta={
+                                "cvr_60m": cvr_60m,
+                                "cvr_threshold": cvr_threshold,
+                                "click_delta": click_delta,
+                                "orders_delta": orders_delta,
+                                "spend_delta": spend_delta,
+                                "totals_source": "ads_campaign_daily(shop_total_or_campaign_sum)",
+                            },
+                        )
+                    )
 
     balance_row = (
         session.query(
@@ -334,6 +426,11 @@ def process_alerts(
     send_discord: bool = True,
     notify_resolved: bool = True,
 ) -> dict[str, int]:
+    settings = get_settings()
+    tz = resolve_timezone(settings.timezone)
+    now_local = _ensure_tz(now, tz)
+    now_db = now_local.replace(tzinfo=None)
+
     result = detect_alerts(shop_key, now, session)
     alerts = result.alerts
 
@@ -346,8 +443,12 @@ def process_alerts(
     resolved = 0
     notified = 0
     suppressed = 0
+    overlap_suppressed = 0
 
     for alert in alerts:
+        if _is_overlap_suppressed_by_open_incident(session, shop_key, alert):
+            overlap_suppressed += 1
+            continue
         meta_json = _safe_json(alert.meta)
         incident, created = open_or_update_incident(
             session,
@@ -391,9 +492,10 @@ def process_alerts(
             should_notify = created or _cooldown_elapsed(incident, now, cooldown_minutes)
         if should_notify:
             if send_discord:
+                repeat_notify = (not created) and (incident.last_notified_at is not None)
                 discord_send(
                     "alerts",
-                    alert_message(alert),
+                    alert_message(alert, repeat=repeat_notify),
                     shop_label=shop_label,
                     webhook_url=webhook_url,
                 )
@@ -426,6 +528,28 @@ def process_alerts(
         key = (incident.incident_type, incident.entity_type, incident.entity_id)
         if key in active_keys:
             continue
+        if incident.incident_type in {"account_balance_low", "account_balance_zero"}:
+            balance_meta = _load_latest_balance_meta(
+                session=session,
+                shop_key=shop_key,
+                now_db=now_db,
+                tz=tz,
+            )
+            if balance_meta is None:
+                # Avoid false "resolved" messages when balance feed is temporarily unavailable.
+                continue
+            current_balance = _to_decimal(balance_meta.get("current_balance"))
+            low_threshold = _to_decimal(balance_meta.get("low_threshold"))
+            if incident.incident_type == "account_balance_low" and current_balance <= low_threshold:
+                incident.last_seen_at = now
+                incident.meta_json = _safe_json(balance_meta)
+                continue
+            if incident.incident_type == "account_balance_zero" and current_balance <= Decimal("0"):
+                incident.last_seen_at = now
+                incident.meta_json = _safe_json(balance_meta)
+                continue
+            # For real resolve cases, replace stale open-time meta with fresh balance snapshot.
+            incident.meta_json = _safe_json(balance_meta)
         resolve_incident(session, incident, now)
         resolved += 1
         session.add(
@@ -474,6 +598,7 @@ def process_alerts(
         "resolved": resolved,
         "notified": notified,
         "suppressed": suppressed,
+        "overlap_suppressed": overlap_suppressed,
     }
 
 
@@ -490,11 +615,14 @@ def load_alerts_source_totals(
     )
 
 
-def alert_message(alert: ActiveAlert, resolved: bool = False) -> str:
+def alert_message(alert: ActiveAlert, resolved: bool = False, repeat: bool = False) -> str:
     title = alert.title
     if resolved:
         title = f"✅ RESOLVED / DA XU LY {title}"
+    elif repeat:
+        title = f"🔁 RE-ALERT / NHAC LAI {title}"
     lines = [title]
+    lines.append(f"muc_do={str(alert.severity or 'INFO').upper()}")
     if alert.entity_type == "campaign":
         campaign_id = str(alert.entity_id or "").strip()
         label = resolve_campaign_display_name(
@@ -520,12 +648,13 @@ def alert_message(alert: ActiveAlert, resolved: bool = False) -> str:
         lines.append("hanh_dong: kiem tra gia thau/ngan sach")
     elif alert.incident_type == "health_no_impressions":
         lines.append(
-            "impr_delta={} click_delta={}".format(
+            "impr_delta={} click_delta={} chi_tieu_60p={}".format(
                 meta.get("impr_delta"),
                 meta.get("click_delta"),
+                _fmt_money(meta.get("spend_delta")),
             )
         )
-        lines.append("hanh_dong: kiem tra target/gia_thau/trang_thai")
+        lines.append("hanh_dong: kiem tra hieu_qua_quang_cao/target/gia_thau/trang_thai")
     elif alert.incident_type == "health_spend_no_orders":
         lines.append(
             "chi_tieu_tang={} don_hang_tang={}".format(
@@ -534,6 +663,37 @@ def alert_message(alert: ActiveAlert, resolved: bool = False) -> str:
             )
         )
         lines.append("hanh_dong: kiem tra creative/target")
+    elif alert.incident_type == "spend_spike_60m":
+        lines.append(
+            "chi_tieu_60p={} nguong_warn={} nguong_critical={}".format(
+                _fmt_money(meta.get("spend_delta")),
+                _fmt_money(meta.get("warn_threshold")),
+                _fmt_money(meta.get("critical_threshold")),
+            )
+        )
+        lines.append("hanh_dong: kiem tra gia_thau/ngan_sach/gioi_han_chi_tieu")
+    elif alert.incident_type == "ctr_drop_60m":
+        lines.append(
+            "ctr_60p={} nguong={} impr_delta={} click_delta={} chi_tieu_60p={}".format(
+                _fmt_pct(meta.get("ctr_60m")),
+                _fmt_pct(meta.get("ctr_threshold")),
+                meta.get("impr_delta"),
+                meta.get("click_delta"),
+                _fmt_money(meta.get("spend_delta")),
+            )
+        )
+        lines.append("hanh_dong: kiem tra noi_dung/doi_tuong/vi_tri_hien_thi")
+    elif alert.incident_type == "cvr_drop_60m":
+        lines.append(
+            "cvr_60p={} nguong={} click_delta={} orders_delta={} chi_tieu_60p={}".format(
+                _fmt_pct(meta.get("cvr_60m")),
+                _fmt_pct(meta.get("cvr_threshold")),
+                meta.get("click_delta"),
+                meta.get("orders_delta"),
+                _fmt_money(meta.get("spend_delta")),
+            )
+        )
+        lines.append("hanh_dong: kiem tra trang_san_pham/gia/ton_kho/uu_dai")
     elif alert.incident_type in {"account_balance_low", "account_balance_zero"}:
         lines.append(
             "so_du_hien_tai={} nguong_canh_bao={}".format(
@@ -541,6 +701,8 @@ def alert_message(alert: ActiveAlert, resolved: bool = False) -> str:
                 _fmt_money(meta.get("low_threshold")),
             )
         )
+        if resolved:
+            lines.append("so_du_sau_phuc_hoi={}".format(_fmt_money(meta.get("current_balance"))))
         lines.append("hanh_dong: nap tien vao tai khoan quang cao")
     else:
         lines.append("hanh_dong: kiem tra cau hinh chien dich")
@@ -642,6 +804,12 @@ def _fmt_ratio(value: Decimal | None) -> str:
     return f"{Decimal(str(value)).quantize(Decimal('0.01'))}"
 
 
+def _fmt_pct(value: Decimal | None) -> str:
+    if value is None:
+        return "-"
+    return f"{Decimal(str(value)).quantize(Decimal('0.01'))}%"
+
+
 def _is_day_boundary_auto_resolve(incident: AdsIncident, now: datetime) -> bool:
     if incident.incident_type not in _DAY_SCOPED_INCIDENT_TYPES:
         return False
@@ -655,7 +823,59 @@ def _is_day_boundary_auto_resolve(incident: AdsIncident, now: datetime) -> bool:
     return opened_local.date() < now_local.date()
 
 
+def _load_latest_balance_meta(
+    *,
+    session,
+    shop_key: str,
+    now_db: datetime,
+    tz,
+) -> dict[str, Any] | None:
+    row = (
+        session.query(
+            AdsAccountBalanceSnapshot.ts,
+            AdsAccountBalanceSnapshot.total_balance,
+        )
+        .filter(
+            AdsAccountBalanceSnapshot.shop_key == shop_key,
+            AdsAccountBalanceSnapshot.ts <= now_db,
+        )
+        .order_by(AdsAccountBalanceSnapshot.ts.desc())
+        .first()
+    )
+    if not row:
+        return None
+    return {
+        "current_balance": _to_decimal(row[1]),
+        "low_threshold": Decimal("50000"),
+        "balance_ts": _normalize_dt(row[0], tz).isoformat(),
+    }
+
+
 def _safe_json(meta: dict[str, Any]) -> str:
     import json
 
     return json.dumps(meta, ensure_ascii=True, default=str)
+
+
+def _is_overlap_suppressed_by_open_incident(
+    session,
+    shop_key: str,
+    alert: ActiveAlert,
+) -> bool:
+    overlap_map = {
+        "spend_spike_60m": ["pacing_overspend"],
+        "ctr_drop_60m": ["health_no_impressions"],
+        "cvr_drop_60m": ["health_spend_no_orders"],
+    }
+    blockers = overlap_map.get(alert.incident_type) or []
+    for incident_type in blockers:
+        blocker = get_open_incident(
+            session=session,
+            shop_key=shop_key,
+            incident_type=incident_type,
+            entity_type=alert.entity_type,
+            entity_id=alert.entity_id,
+        )
+        if blocker is not None:
+            return True
+    return False

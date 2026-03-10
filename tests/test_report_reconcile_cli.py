@@ -11,6 +11,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from dotori_shopee_automation.ads.models import AdsCampaign, AdsCampaignDaily
+from dotori_shopee_automation.ads.reconcile import _extract_rendered_metrics
 from dotori_shopee_automation.ads.reporting import render_daily_html
 from dotori_shopee_automation.config import get_settings
 from dotori_shopee_automation.db import Base
@@ -154,3 +155,16 @@ def test_report_reconcile_cli_outputs_md_and_json(tmp_path: Path, monkeypatch) -
     assert by_metric["gmv"]["db_aggregated_value"] == "1400000"
     assert by_metric["gmv"]["rendered_value"] == "1200000"
 
+
+def test_extract_rendered_metrics_supports_legacy_score_matrix_cards() -> None:
+    path = Path("collaboration/reports/minmin/daily/2026-02-28_final.html")
+    assert path.exists()
+
+    metrics, mode = _extract_rendered_metrics(path)
+
+    assert mode == "score_matrix_cards"
+    assert metrics["spend"] == Decimal("207693")
+    assert metrics["gmv"] == Decimal("2649000")
+    assert metrics["orders"] == 4
+    assert metrics["impressions"] == 3814
+    assert metrics["clicks"] == 130

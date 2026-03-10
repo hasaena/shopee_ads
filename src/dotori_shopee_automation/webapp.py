@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 import uuid
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
@@ -62,6 +62,15 @@ OPS_TIMEZONE_NAME = "Asia/Ho_Chi_Minh"
 OPS_TIMEZONE = ZoneInfo(OPS_TIMEZONE_NAME)
 _TOKEN_IMPORT_EVENT_MESSAGE = "phase1_token_import_event"
 _TOKEN_IMPORT_SUMMARY_MESSAGE = "phase1_token_import_summary"
+_TOKEN_IMPORT_INGRESS_MESSAGE = "phase1_token_import_ingress"
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_INGRESS_EVENTS_JSONL = (
+    _PROJECT_ROOT
+    / "return_and_review"
+    / "collaboration"
+    / "artifacts"
+    / "import_ingress_events_sanitized.jsonl"
+)
 
 
 @app.middleware("http")
@@ -280,6 +289,116 @@ def _sha256_8(value: str | None) -> str:
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _sanitize_database_url(database_url: str) -> str:
+    if database_url.startswith("sqlite:///"):
+        return database_url
+    parsed = urlsplit(database_url)
+    if not parsed.netloc or "@" not in parsed.netloc:
+        return database_url
+    left, right = parsed.netloc.rsplit("@", 1)
+    if ":" in left:
+        username, _password = left.split(":", 1)
+        safe_left = f"{username}:***"
+    else:
+        safe_left = "***"
+    return urlunsplit((parsed.scheme, f"{safe_left}@{right}", parsed.path, parsed.query, parsed.fragment))
+
+
+def _safe_content_length(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _normalize_user_agent(raw_user_agent: str | None) -> str:
+    text = str(raw_user_agent or "").strip().lower()
+    if not text:
+        return "missing"
+    if "google" in text and ("apps script" in text or "appsscript" in text or "apps-script" in text):
+        return "google_apps_script"
+    if "appsscript" in text or "apps-script" in text:
+        return "google_apps_script"
+    if "testclient" in text or "pytest" in text:
+        return "testclient"
+    if "httpx" in text:
+        return "httpx"
+    if "python-requests" in text:
+        return "python_requests"
+    if "curl" in text:
+        return "curl"
+    token = text.split(" ", 1)[0].strip()
+    if "/" in token:
+        token = token.split("/", 1)[0].strip()
+    return token[:60] if token else "unknown"
+
+
+def _classify_ingress_kind(
+    *,
+    request_path: str,
+    method: str,
+    payload_source: str | None,
+    request_id: str | None,
+    user_agent_family: str,
+) -> str:
+    src = str(payload_source or "").lower()
+    req = str(request_id or "").lower()
+    ua = str(user_agent_family or "").lower()
+    if "fixture" in src or "fixture" in req:
+        return "fixture_loader"
+    if (
+        "test" in src
+        or "testclient" in src
+        or req.startswith("task")
+        or req.startswith("test")
+        or "testclient" in ua
+    ):
+        return "testclient"
+    if "manual" in src or "local" in src or "manual" in req:
+        return "manual_script"
+    if request_path == "/ops/phase1/token/import" and method.upper() == "POST":
+        return "http_endpoint"
+    return "unknown"
+
+
+def _classify_ingress_confidence(
+    *,
+    ingress_kind: str,
+    payload_source: str | None,
+    request_id: str | None,
+    user_agent_family: str,
+) -> str:
+    if ingress_kind in {"fixture_loader", "testclient", "manual_script"}:
+        return "weak"
+    src = str(payload_source or "").lower()
+    req = str(request_id or "").lower()
+    ua = str(user_agent_family or "").lower()
+    has_gas_marker = (
+        "appsscript" in src
+        or "gas" in src
+        or ua == "google_apps_script"
+    )
+    has_test_marker = any(marker in req for marker in ["task", "test", "fixture", "manual"])
+    if ingress_kind == "http_endpoint" and has_gas_marker and not has_test_marker:
+        return "strong"
+    if ingress_kind == "http_endpoint":
+        return "medium"
+    return "weak"
+
+
+def _append_import_ingress_jsonl(row: dict[str, Any]) -> None:
+    try:
+        _INGRESS_EVENTS_JSONL.parent.mkdir(parents=True, exist_ok=True)
+        with _INGRESS_EVENTS_JSONL.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(row, ensure_ascii=True))
+            fp.write("\n")
+    except Exception:
+        return
 
 
 def _extract_appsscript_token_map(data: object) -> dict[str, dict[str, Any]]:
@@ -1695,20 +1814,46 @@ def ops_phase1_token_import(request: Request, payload: dict[str, Any]) -> dict[s
         raise HTTPException(status_code=400, detail="invalid payload: token map is empty")
 
     token_mode_raw = payload.get("token_mode")
-    token_mode = str(token_mode_raw).strip() if token_mode_raw is not None else ""
-    if not token_mode:
-        token_mode = "legacy"
+    payload_token_mode = (
+        str(token_mode_raw).strip() if token_mode_raw is not None and str(token_mode_raw).strip() else None
+    )
+    token_mode = payload_token_mode or "legacy"
     source_raw = payload.get("source")
-    source = str(source_raw).strip() if source_raw is not None else "push"
+    payload_source = str(source_raw).strip() if source_raw is not None and str(source_raw).strip() else None
+    source = payload_source or "push"
     pushed_at_raw = payload.get("pushed_at")
     pushed_at: int | None = None
     if pushed_at_raw is not None:
         pushed_at = _parse_epoch_seconds(pushed_at_raw, field_name="pushed_at")
+    server_generated_request_id = uuid.uuid4().hex
     request_id = str(payload.get("request_id") or request.headers.get("X-Request-ID") or "").strip()
     if not request_id:
-        request_id = uuid.uuid4().hex
+        request_id = server_generated_request_id
     imported_at_utc = _now_utc()
     imported_at_utc_iso = imported_at_utc.isoformat().replace("+00:00", "Z")
+    request_path = str(request.url.path)
+    method = str(request.method or "POST").upper()
+    user_agent_raw = str(request.headers.get("User-Agent") or "")
+    user_agent_family = _normalize_user_agent(user_agent_raw)
+    remote_host = None
+    if request.client is not None and request.client.host:
+        remote_host = str(request.client.host)
+    remote_addr_hash = _sha256_8(remote_host) if remote_host else "unavailable"
+    ingress_kind = _classify_ingress_kind(
+        request_path=request_path,
+        method=method,
+        payload_source=payload_source,
+        request_id=request_id,
+        user_agent_family=user_agent_family,
+    )
+    provenance_confidence = _classify_ingress_confidence(
+        ingress_kind=ingress_kind,
+        payload_source=payload_source,
+        request_id=request_id,
+        user_agent_family=user_agent_family,
+    )
+    content_length = _safe_content_length(request.headers.get("Content-Length"))
+    sanitized_database_url = _sanitize_database_url(str(get_settings().database_url))
 
     phase1_shop_id_map = _resolve_phase1_shop_id_map()
     if not phase1_shop_id_map:
@@ -1724,6 +1869,7 @@ def ops_phase1_token_import(request: Request, payload: dict[str, Any]) -> dict[s
     token_fingerprints: dict[str, dict[str, object]] = {}
     token_sha8: dict[str, str] = {}
     discarded_refresh_tokens = 0
+    ingress_rows_buffer: list[dict[str, Any]] = []
 
     init_db()
     session = SessionLocal()
@@ -1791,6 +1937,29 @@ def ops_phase1_token_import(request: Request, payload: dict[str, Any]) -> dict[s
                 if access_expire_ts is not None
                 else -1
             )
+            has_refresh_in_payload = 1 if int(discarded_refresh) == 1 else 0
+            ingress_row = {
+                "server_received_at": imported_at_utc_iso,
+                "server_generated_request_id": server_generated_request_id,
+                "request_path": request_path,
+                "method": method,
+                "user_agent_family": user_agent_family,
+                "user_agent_sha8": _sha256_8(user_agent_raw),
+                "remote_addr_hash": remote_addr_hash,
+                "content_length": content_length,
+                "database_url": sanitized_database_url,
+                "shop_key": shop_key,
+                "shop_id": int(shop_id),
+                "token_sha8": sha8,
+                "expires_at": access_expires_at_iso,
+                "has_refresh_token": has_refresh_in_payload,
+                "payload_source": payload_source,
+                "payload_token_mode": payload_token_mode,
+                "request_id": request_id,
+                "ingress_kind": ingress_kind,
+                "provenance_confidence": provenance_confidence,
+            }
+            ingress_rows_buffer.append(ingress_row)
             session.add(
                 EventLog(
                     level="INFO",
@@ -1810,9 +1979,23 @@ def ops_phase1_token_import(request: Request, payload: dict[str, Any]) -> dict[s
                             "discarded_refresh_token": int(discarded_refresh),
                             "access_expires_at": access_expires_at_iso,
                             "access_expires_in_sec": access_expires_in_sec,
+                            "payload_source": payload_source,
+                            "payload_token_mode": payload_token_mode,
+                            "server_generated_request_id": server_generated_request_id,
+                            "request_path": request_path,
+                            "method": method,
+                            "ingress_kind": ingress_kind,
+                            "provenance_confidence": provenance_confidence,
                         },
                         ensure_ascii=True,
                     ),
+                )
+            )
+            session.add(
+                EventLog(
+                    level="INFO",
+                    message=_TOKEN_IMPORT_INGRESS_MESSAGE,
+                    meta_json=json.dumps(ingress_row, ensure_ascii=True),
                 )
             )
         session.commit()
@@ -1829,6 +2012,9 @@ def ops_phase1_token_import(request: Request, payload: dict[str, Any]) -> dict[s
         raise HTTPException(status_code=500, detail="token_import_failed") from exc
     finally:
         session.close()
+
+    for ingress_row in ingress_rows_buffer:
+        _append_import_ingress_jsonl(ingress_row)
 
     resume_result: dict[str, Any]
     try:
@@ -1857,6 +2043,13 @@ def ops_phase1_token_import(request: Request, payload: dict[str, Any]) -> dict[s
                         "source": source,
                         "token_mode": token_mode,
                         "request_id": request_id,
+                        "payload_source": payload_source,
+                        "payload_token_mode": payload_token_mode,
+                        "server_generated_request_id": server_generated_request_id,
+                        "request_path": request_path,
+                        "method": method,
+                        "ingress_kind": ingress_kind,
+                        "provenance_confidence": provenance_confidence,
                         "imported_at_utc": imported_at_utc_iso,
                         "imported_total": imported_total,
                         "noop_total": noop_total,

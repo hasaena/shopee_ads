@@ -158,6 +158,7 @@ def _build_report_embed(message: str) -> dict[str, Any] | None:
         headline = headline.split(" | http://", 1)[0].strip()
     elif " | https://" in headline:
         headline = headline.split(" | https://", 1)[0].strip()
+    report_type = _detect_report_type(headline)
     title = _build_compact_report_title(shop_label, headline)
     detail_lines: list[str] = []
     for line in lines[1:]:
@@ -188,8 +189,10 @@ def _build_report_embed(message: str) -> dict[str, Any] | None:
                 "inline": False,
             }
         )
+    # Daily/Midday embeds already expose summary metrics at the top.
+    # Keep KPI detail field only for weekly reports to avoid duplicate blocks.
     kpi_line = next((line for line in detail_lines if line.startswith("KPI:")), "")
-    if kpi_line:
+    if kpi_line and report_type == "Weekly":
         fields.append(
             {
                 "name": "KPI",

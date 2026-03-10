@@ -251,6 +251,64 @@ def _normalize_campaign_id(raw: object | None) -> str:
     return value
 
 
+def _select_orders_metric(item: dict[str, Any]) -> object | None:
+    """
+    Normalize order metric with a consistent scope.
+
+    Policy:
+    - Prefer explicit order fields when provided by endpoint.
+    - Otherwise choose scope by `DOTORI_ADS_METRIC_SCOPE`:
+      - `direct` (default): direct_* first, then broad_* fallback
+      - `broad`: broad_* first, then direct_* fallback
+    """
+    explicit = item.get("orders") or item.get("order") or item.get("orders_cnt")
+    if explicit is not None:
+        return explicit
+    scope = os.environ.get("DOTORI_ADS_METRIC_SCOPE", "direct").strip().lower()
+    if scope == "broad":
+        for key in ("broad_order", "broad_item_sold", "direct_order", "direct_item_sold"):
+            value = item.get(key)
+            if value is not None:
+                return value
+        return None
+    for key in ("direct_order", "direct_item_sold", "broad_order", "broad_item_sold"):
+        value = item.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _select_gmv_metric(item: dict[str, Any]) -> object | None:
+    """
+    Normalize GMV metric with a consistent scope.
+
+    Policy:
+    - Prefer explicit gmv/revenue/sales fields when available.
+    - Otherwise choose scope by `DOTORI_ADS_METRIC_SCOPE`:
+      - `direct` (default): direct_gmv first, then broad_gmv fallback
+      - `broad`: broad_gmv first, then direct_gmv fallback
+    """
+    explicit = item.get("gmv") or item.get("revenue") or item.get("sales")
+    if explicit is not None:
+        return explicit
+    scope = os.environ.get("DOTORI_ADS_METRIC_SCOPE", "direct").strip().lower()
+    if scope == "broad":
+        broad_gmv = item.get("broad_gmv")
+        if broad_gmv is not None:
+            return broad_gmv
+        direct_gmv = item.get("direct_gmv")
+        if direct_gmv is not None:
+            return direct_gmv
+        return None
+    direct_gmv = item.get("direct_gmv")
+    if direct_gmv is not None:
+        return direct_gmv
+    broad_gmv = item.get("broad_gmv")
+    if broad_gmv is not None:
+        return broad_gmv
+    return None
+
+
 def _normalize_ads_snapshot_perf_payload(
     payload: dict[str, Any] | None, *, ts_iso: str
 ) -> dict[str, Any]:
@@ -324,29 +382,9 @@ def _normalize_ads_snapshot_perf_payload(
         if "clicks_today" not in item or item.get("clicks_today") is None:
             item["clicks_today"] = item.get("clicks") or item.get("click")
         if "orders_today" not in item or item.get("orders_today") is None:
-            orders_value = (
-                item.get("orders") or item.get("order") or item.get("orders_cnt")
-            )
-            if orders_value is None:
-                direct_order = item.get("direct_order")
-                broad_order = item.get("broad_order")
-                if direct_order is not None or broad_order is not None:
-                    try:
-                        orders_value = int(direct_order or 0) + int(broad_order or 0)
-                    except Exception:
-                        orders_value = None
-            item["orders_today"] = orders_value
+            item["orders_today"] = _select_orders_metric(item)
         if "gmv_today" not in item or item.get("gmv_today") is None:
-            gmv_value = item.get("gmv") or item.get("revenue") or item.get("sales")
-            if gmv_value is None:
-                direct_gmv = item.get("direct_gmv")
-                broad_gmv = item.get("broad_gmv")
-                if direct_gmv is not None or broad_gmv is not None:
-                    try:
-                        gmv_value = float(direct_gmv or 0) + float(broad_gmv or 0)
-                    except Exception:
-                        gmv_value = None
-            item["gmv_today"] = gmv_value
+            item["gmv_today"] = _select_gmv_metric(item)
 
         if "ts" not in item or item.get("ts") in (None, ""):
             item["ts"] = ts_iso
@@ -532,27 +570,9 @@ def _normalize_ads_daily_payload(payload: dict[str, Any] | None) -> dict[str, An
         if "clicks" not in item or item.get("clicks") is None:
             item["clicks"] = item.get("click")
         if "orders" not in item or item.get("orders") is None:
-            orders_value = item.get("order") or item.get("orders_cnt")
-            if orders_value is None:
-                direct_order = item.get("direct_order")
-                broad_order = item.get("broad_order")
-                if direct_order is not None or broad_order is not None:
-                    try:
-                        orders_value = int(direct_order or 0) + int(broad_order or 0)
-                    except Exception:
-                        orders_value = None
-            item["orders"] = orders_value
+            item["orders"] = _select_orders_metric(item)
         if "gmv" not in item or item.get("gmv") is None:
-            gmv_value = item.get("revenue") or item.get("sales")
-            if gmv_value is None:
-                direct_gmv = item.get("direct_gmv")
-                broad_gmv = item.get("broad_gmv")
-                if direct_gmv is not None or broad_gmv is not None:
-                    try:
-                        gmv_value = float(direct_gmv or 0) + float(broad_gmv or 0)
-                    except Exception:
-                        gmv_value = None
-            item["gmv"] = gmv_value
+            item["gmv"] = _select_gmv_metric(item)
 
     return payload
 

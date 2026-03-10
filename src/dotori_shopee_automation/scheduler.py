@@ -486,6 +486,20 @@ def _resolve_token_resolved_cooldown_sec() -> int:
     return max(value, 0)
 
 
+def _resolve_token_ttl_low_alert_enabled() -> bool:
+    raw = os.environ.get("DOTORI_TOKEN_TTL_LOW_ALERT_ENABLED", "0").strip().lower()
+    return raw in {"1", "true", "yes"}
+
+
+def _resolve_token_gate_blocked_alert_cooldown_sec() -> int:
+    raw = os.environ.get("DOTORI_TOKEN_GATE_BLOCKED_ALERT_COOLDOWN_SEC", "3600").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 3600
+    return max(value, 0)
+
+
 def _resolve_preflight_artifacts_root() -> Path:
     raw = os.environ.get(
         "DOTORI_PREFLIGHT_ARTIFACTS_ROOT", "collaboration/tmp/token_preflight_gate"
@@ -592,8 +606,43 @@ def _scheduler_token_preflight_gate(
         shops=enabled,
         gate_result=gate_result,
         cooldown_sec=cooldown_sec,
-        send_discord=send_discord,
+        send_discord=(send_discord and _resolve_token_ttl_low_alert_enabled()),
     )
+    if send_discord:
+        failed_rows = [
+            row
+            for row in (gate_result.get("rows") or [])
+            if isinstance(row, dict)
+            and str(row.get("token_verdict") or "").strip().lower() in {"missing", "unknown", "expired", "short_ttl"}
+        ]
+        if failed_rows:
+            detail_lines: list[str] = []
+            for row in failed_rows:
+                detail_lines.append(
+                    "{}: verdict={} ttl={}s min={}s".format(
+                        str(row.get("shop_key") or "-"),
+                        str(row.get("token_verdict") or "-"),
+                        int(row.get("access_expires_in_sec") or -1),
+                        int(row.get("min_access_ttl_sec") or 0),
+                    )
+                )
+            dispatch_alert_card(
+                title="Token gate blocked - scheduler tam dung tam thoi",
+                severity="WARN",
+                event_code="TOKEN_GATE_BLOCKED",
+                detail_lines=detail_lines,
+                action_line="He thong se tu dong thu lai o chu ky tiep theo.",
+                dedup_key=f"token_gate_blocked:{job_name}:{','.join(sorted([shop.shop_key for shop in enabled]))}",
+                cooldown_sec=_resolve_token_gate_blocked_alert_cooldown_sec(),
+                send_discord=True,
+                shop_label="OPS",
+                webhook_url=get_settings().discord_webhook_alerts_url,
+                meta={
+                    "job_name": job_name,
+                    "failed_rows": failed_rows,
+                    "ttl_low_alert_enabled": int(_resolve_token_ttl_low_alert_enabled()),
+                },
+            )
     for row in alerts.get("rows") or []:
         if not isinstance(row, dict):
             continue
@@ -929,7 +978,8 @@ def phase1_schedule_run_once(
                 assert report_date is not None
                 assert report_kind is not None
                 data = aggregate_daily_report(session, shop_key, report_date, as_of)
-                data.update({"shop_label": shop.label, "kind": report_kind, "generated_at": anchor_dt})
+                generated_at = as_of if (report_kind == "midday" and as_of is not None) else datetime.now(tz)
+                data.update({"shop_label": shop.label, "kind": report_kind, "generated_at": generated_at})
                 scorecard = data.get("scorecard") if isinstance(data.get("scorecard"), dict) else {}
                 budget_est = _to_decimal(scorecard.get("budget_est")) if isinstance(scorecard, dict) else None
                 campaigns_budgeted = int(data.get("campaigns_budgeted") or 0)

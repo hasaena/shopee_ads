@@ -97,6 +97,19 @@ from .token_preflight_gate import (
 from .utils.envfile import load_env_file
 from .webapp import app as web_app, build_phase1_status_payload
 from .ops.doctor_notify import run_doctor_notify_cycle, parse_min_severity
+from .ops.token_import_inspector import (
+    artifact_root as token_import_artifact_root,
+    build_recent_ingress_summary,
+    build_latest_imports_snapshot,
+    build_provenance_payload,
+    build_sanity_warnings,
+    extract_import_fingerprint,
+    has_import_changed,
+    inspect_latest_import,
+    inspect_latest_ingress,
+    write_ingress_events_jsonl_snapshot,
+    write_json as write_token_import_json,
+)
 
 app = typer.Typer(help="Dotori Shopee automation CLI")
 shops_app = typer.Typer(help="Shop config commands")
@@ -6684,6 +6697,1153 @@ def ops_phase1_auth_fingerprint(
     print(f"parity_ok={1 if parity_ok else 0}")
     if not parity_ok:
         raise typer.Exit(code=2)
+
+
+def _set_phase1_profile_overrides(
+    *,
+    database_url: str,
+    shops_config_path: str,
+) -> dict[str, str | None]:
+    previous = {
+        "DATABASE_URL": os.environ.get("DATABASE_URL"),
+        "SHOPS_CONFIG_PATH": os.environ.get("SHOPS_CONFIG_PATH"),
+    }
+    os.environ["DATABASE_URL"] = database_url
+    os.environ["SHOPS_CONFIG_PATH"] = shops_config_path
+    get_settings.cache_clear()
+    return previous
+
+
+def _restore_phase1_profile_overrides(previous: dict[str, str | None]) -> None:
+    for key in ["DATABASE_URL", "SHOPS_CONFIG_PATH"]:
+        value = previous.get(key)
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    get_settings.cache_clear()
+
+
+def _parse_shop_keys_csv(raw: str) -> list[str]:
+    out: list[str] = []
+    for token in str(raw or "").split(","):
+        key = token.strip()
+        if key:
+            out.append(key)
+    return out
+
+
+def _int_or_none(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(str(value).strip())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_latest_import_artifacts(
+    *,
+    shop_key: str,
+    snapshot_shop_keys: list[str],
+    max_recent_seconds: int,
+    suspicious_ttl_seconds: int,
+) -> dict[str, Any]:
+    inspection = inspect_latest_import(
+        shop_key=shop_key,
+        max_recent_seconds=max_recent_seconds,
+        suspicious_ttl_seconds=suspicious_ttl_seconds,
+    )
+    warnings = build_sanity_warnings(
+        inspection=inspection,
+        suspicious_ttl_seconds=suspicious_ttl_seconds,
+    )
+    warnings_payload = {
+        "generated_at_utc": inspection.get("generated_at_utc"),
+        "shop_key": shop_key,
+        "warning_count": len(warnings),
+        "warnings": warnings,
+    }
+    provenance_payload = build_provenance_payload(inspection=inspection)
+    ingress_payload = inspect_latest_ingress(shop_key=shop_key)
+    snapshot = build_latest_imports_snapshot(
+        shop_keys=snapshot_shop_keys,
+        max_recent_seconds=max_recent_seconds,
+        suspicious_ttl_seconds=suspicious_ttl_seconds,
+    )
+
+    artifacts_dir = token_import_artifact_root()
+    ingress_jsonl_path = write_ingress_events_jsonl_snapshot(
+        shop_keys=snapshot_shop_keys,
+        limit=1000,
+    )
+    inspection_path = write_token_import_json(
+        artifacts_dir / f"latest_import_inspection_{shop_key}.json",
+        inspection,
+    )
+    latest_ingress_path = write_token_import_json(
+        artifacts_dir / f"latest_import_ingress_{shop_key}.json",
+        ingress_payload,
+    )
+    provenance_path = write_token_import_json(
+        artifacts_dir / f"token_import_provenance_{shop_key}.json",
+        provenance_payload,
+    )
+    warnings_path = write_token_import_json(
+        artifacts_dir / f"import_sanity_warnings_{shop_key}.json",
+        warnings_payload,
+    )
+    snapshot_path = write_token_import_json(
+        artifacts_dir / "latest_token_imports_sanitized.json",
+        snapshot,
+    )
+    return {
+        "inspection": inspection,
+        "latest_ingress": ingress_payload,
+        "provenance": provenance_payload,
+        "warnings_payload": warnings_payload,
+        "inspection_path": str(inspection_path),
+        "latest_ingress_path": str(latest_ingress_path),
+        "ingress_jsonl_path": str(ingress_jsonl_path),
+        "provenance_path": str(provenance_path),
+        "warnings_path": str(warnings_path),
+        "snapshot_path": str(snapshot_path),
+    }
+
+
+def _run_watch_import_session(
+    *,
+    shop: str,
+    timeout_seconds: int,
+    poll_seconds: int,
+    max_recent_seconds: int,
+    suspicious_ttl_seconds: int,
+    snapshot_shop_keys: list[str],
+    session_output_path: Path | None = None,
+    events_output_path: Path | None = None,
+) -> dict[str, Any]:
+    start_utc = datetime.now(timezone.utc)
+    started_monotonic = time_module.monotonic()
+    baseline_artifacts = _write_latest_import_artifacts(
+        shop_key=shop,
+        snapshot_shop_keys=snapshot_shop_keys,
+        max_recent_seconds=max_recent_seconds,
+        suspicious_ttl_seconds=suspicious_ttl_seconds,
+    )
+    baseline = (
+        baseline_artifacts.get("inspection")
+        if isinstance(baseline_artifacts.get("inspection"), dict)
+        else {}
+    )
+    baseline_fingerprint = extract_import_fingerprint(baseline)
+
+    poll_rows: list[dict[str, Any]] = []
+    detected_import: dict[str, Any] | None = None
+    detected_fingerprint: dict[str, Any] | None = None
+    last_seen_imported_at: str | None = str(baseline.get("imported_at") or "") or None
+
+    timeout_sec = max(1, int(timeout_seconds))
+    poll_sec = max(1, int(poll_seconds))
+    while True:
+        now_utc = datetime.now(timezone.utc)
+        current = inspect_latest_import(
+            shop_key=shop,
+            max_recent_seconds=max_recent_seconds,
+            suspicious_ttl_seconds=suspicious_ttl_seconds,
+            now_utc=now_utc,
+        )
+        current_fingerprint = extract_import_fingerprint(current)
+        changed = has_import_changed(baseline_fingerprint, current_fingerprint)
+        poll_rows.append(
+            {
+                "observed_at_utc": now_utc.isoformat(),
+                "changed_from_baseline": int(changed),
+                "fingerprint": current_fingerprint,
+                "import_age_seconds": current.get("import_age_seconds"),
+                "provenance_kind": current.get("provenance_kind"),
+                "provenance_confidence": current.get("provenance_confidence"),
+                "ingress_kind": current.get("ingress_kind"),
+                "token_sha8": current.get("token_sha8"),
+            }
+        )
+        current_imported_at = str(current.get("imported_at") or "").strip() or None
+        if current_imported_at:
+            last_seen_imported_at = current_imported_at
+        if changed:
+            detected_import = current
+            detected_fingerprint = current_fingerprint
+            break
+        elapsed = time_module.monotonic() - started_monotonic
+        if elapsed >= timeout_sec:
+            break
+        time_module.sleep(poll_sec)
+
+    ended_utc = datetime.now(timezone.utc)
+    elapsed_seconds = int(ended_utc.timestamp() - start_utc.timestamp())
+    latest_ingress = inspect_latest_ingress(shop_key=shop)
+
+    artifacts_dir = token_import_artifact_root()
+    session_path = (
+        Path(session_output_path)
+        if session_output_path
+        else artifacts_dir / f"watch_import_session_{shop}.json"
+    )
+    events_path = (
+        Path(events_output_path)
+        if events_output_path
+        else artifacts_dir / f"watch_import_events_{shop}.json"
+    )
+    events_payload = {
+        "generated_at_utc": ended_utc.isoformat(),
+        "shop_key": shop,
+        "poll_count": len(poll_rows),
+        "events": poll_rows,
+    }
+    session_payload = {
+        "generated_at_utc": ended_utc.isoformat(),
+        "shop_key": shop,
+        "started_at_utc": start_utc.isoformat(),
+        "ended_at_utc": ended_utc.isoformat(),
+        "elapsed_seconds": elapsed_seconds,
+        "timeout_seconds": timeout_sec,
+        "poll_seconds": poll_sec,
+        "detected_new_import": int(detected_import is not None),
+        "detected_event_count": sum(
+            1 for row in poll_rows if int(row.get("changed_from_baseline") or 0) == 1
+        ),
+        "last_seen_imported_at": last_seen_imported_at,
+        "baseline_fingerprint": baseline_fingerprint,
+        "detected_fingerprint": detected_fingerprint,
+        "baseline_import": baseline,
+        "detected_import": detected_import,
+        "latest_ingress": latest_ingress,
+        "baseline_artifacts": {
+            "inspection_path": baseline_artifacts.get("inspection_path"),
+            "latest_ingress_path": baseline_artifacts.get("latest_ingress_path"),
+            "ingress_jsonl_path": baseline_artifacts.get("ingress_jsonl_path"),
+            "provenance_path": baseline_artifacts.get("provenance_path"),
+            "warnings_path": baseline_artifacts.get("warnings_path"),
+            "snapshot_path": baseline_artifacts.get("snapshot_path"),
+        },
+    }
+    saved_events = write_token_import_json(events_path, events_payload)
+    saved_session = write_token_import_json(session_path, session_payload)
+    return {
+        "session": session_payload,
+        "events": events_payload,
+        "session_path": str(saved_session),
+        "events_path": str(saved_events),
+        "detected_import": detected_import,
+    }
+
+
+def _is_live_provenance_kind(kind: str) -> bool:
+    normalized = str(kind or "").strip().lower()
+    return normalized in {"endpoint_http_probable_real_live", "endpoint_http_probable_gas"}
+
+
+@ops_phase1_token_app.command("latest-import")
+def ops_phase1_token_latest_import(
+    shop: str = typer.Option(..., "--shop", "--shop-key", help="Shop key"),
+    env_file: str | None = typer.Option(
+        "collaboration/env/.env.phase1.local",
+        "--env-file",
+        help="Env file path",
+    ),
+    database_url: str = typer.Option(
+        "sqlite:///./collaboration/phase1_live.db",
+        "--database-url",
+        help="Database URL override for deployed-equivalent inspection.",
+    ),
+    shops_config_path: str = typer.Option(
+        "./collaboration/shops_samord_minmin.yaml",
+        "--shops-config-path",
+        help="Shops config path override for deployed-equivalent inspection.",
+    ),
+    snapshot_shops: str = typer.Option(
+        "samord,minmin",
+        "--snapshot-shops",
+        help="Comma-separated shops for latest_token_imports_sanitized snapshot.",
+    ),
+    max_recent_seconds: int = typer.Option(
+        300,
+        "--max-recent-seconds",
+        help="Recent import threshold in seconds.",
+    ),
+    suspicious_ttl_seconds: int = typer.Option(
+        86400,
+        "--suspicious-ttl-seconds",
+        help="TTL warning threshold in seconds.",
+    ),
+) -> None:
+    _maybe_load_env_file(env_file)
+    previous_env = _set_phase1_profile_overrides(
+        database_url=database_url,
+        shops_config_path=shops_config_path,
+    )
+    try:
+        _get_shop_or_exit(shop)
+        valid_shop_keys = {row.shop_key for row in _load_shops_or_exit()}
+        snapshot_keys = [
+            key for key in _parse_shop_keys_csv(snapshot_shops) if key in valid_shop_keys
+        ]
+        if shop not in snapshot_keys:
+            snapshot_keys.insert(0, shop)
+        if not snapshot_keys:
+            snapshot_keys = [shop]
+
+        run_info = _write_latest_import_artifacts(
+            shop_key=shop,
+            snapshot_shop_keys=snapshot_keys,
+            max_recent_seconds=max_recent_seconds,
+            suspicious_ttl_seconds=suspicious_ttl_seconds,
+        )
+        inspection = run_info.get("inspection") if isinstance(run_info.get("inspection"), dict) else {}
+        print(
+            "ops_phase1_token_latest_import "
+            f"shop={shop} "
+            f"provenance_kind={inspection.get('provenance_kind')} "
+            f"provenance_confidence={inspection.get('provenance_confidence')} "
+            f"ingress_kind={inspection.get('ingress_kind')} "
+            f"is_recent_import={inspection.get('is_recent_import')} "
+            f"import_age_seconds={inspection.get('import_age_seconds')} "
+            f"token_sha8={inspection.get('token_sha8')} "
+            f"ttl_seconds_now={inspection.get('ttl_seconds_now')} "
+            f"inspection_path={run_info.get('inspection_path')} "
+            f"latest_ingress_path={run_info.get('latest_ingress_path')} "
+            f"ingress_jsonl_path={run_info.get('ingress_jsonl_path')} "
+            f"provenance_path={run_info.get('provenance_path')} "
+            f"warnings_path={run_info.get('warnings_path')} "
+            f"snapshot_path={run_info.get('snapshot_path')}"
+        )
+    finally:
+        _restore_phase1_profile_overrides(previous_env)
+
+
+@ops_phase1_token_app.command("recent-ingress")
+def ops_phase1_token_recent_ingress(
+    shop: str = typer.Option(..., "--shop", "--shop-key", help="Shop key"),
+    since_seconds: int = typer.Option(
+        86400,
+        "--since-seconds",
+        help="Lookback window in seconds for ingress events.",
+    ),
+    max_rows: int = typer.Option(
+        500,
+        "--max-rows",
+        help="Maximum ingress rows to scan.",
+    ),
+    max_recent_seconds: int = typer.Option(
+        300,
+        "--max-recent-seconds",
+        help="Recency threshold used for provenance classification.",
+    ),
+    env_file: str | None = typer.Option(
+        "collaboration/env/.env.phase1.local",
+        "--env-file",
+        help="Env file path",
+    ),
+    database_url: str = typer.Option(
+        "sqlite:///./collaboration/phase1_live.db",
+        "--database-url",
+        help="Database URL override for deployed-equivalent inspection.",
+    ),
+    shops_config_path: str = typer.Option(
+        "./collaboration/shops_samord_minmin.yaml",
+        "--shops-config-path",
+        help="Shops config path override for deployed-equivalent inspection.",
+    ),
+    output_path: str | None = typer.Option(
+        None,
+        "--output-path",
+        help="recent_import_ingress artifact path override.",
+    ),
+) -> None:
+    _maybe_load_env_file(env_file)
+    previous_env = _set_phase1_profile_overrides(
+        database_url=database_url,
+        shops_config_path=shops_config_path,
+    )
+    try:
+        _get_shop_or_exit(shop)
+        summary = build_recent_ingress_summary(
+            shop_key=shop,
+            since_seconds=since_seconds,
+            max_rows=max_rows,
+            max_recent_seconds=max_recent_seconds,
+        )
+        artifacts_dir = token_import_artifact_root()
+        target_path = (
+            Path(output_path)
+            if output_path
+            else artifacts_dir / f"recent_import_ingress_{shop}.json"
+        )
+        saved = write_token_import_json(target_path, summary)
+        print(
+            "ops_phase1_token_recent_ingress "
+            f"shop={shop} "
+            f"since_seconds={int(since_seconds)} "
+            f"total_events={summary.get('total_events')} "
+            f"endpoint_hit_count={summary.get('endpoint_hit_count')} "
+            f"probable_gas_or_live_count={summary.get('probable_gas_or_live_count')} "
+            f"output_path={saved}"
+        )
+    finally:
+        _restore_phase1_profile_overrides(previous_env)
+
+
+@ops_phase1_token_app.command("watch-import")
+def ops_phase1_token_watch_import(
+    shop: str = typer.Option(..., "--shop", "--shop-key", help="Shop key"),
+    timeout_seconds: int = typer.Option(
+        900,
+        "--timeout-seconds",
+        help="Maximum watch duration in seconds.",
+    ),
+    poll_seconds: int = typer.Option(
+        5,
+        "--poll-seconds",
+        help="Polling interval in seconds.",
+    ),
+    env_file: str | None = typer.Option(
+        "collaboration/env/.env.phase1.local",
+        "--env-file",
+        help="Env file path",
+    ),
+    database_url: str = typer.Option(
+        "sqlite:///./collaboration/phase1_live.db",
+        "--database-url",
+        help="Database URL override for deployed-equivalent watch.",
+    ),
+    shops_config_path: str = typer.Option(
+        "./collaboration/shops_samord_minmin.yaml",
+        "--shops-config-path",
+        help="Shops config path override for deployed-equivalent watch.",
+    ),
+    snapshot_shops: str = typer.Option(
+        "samord,minmin",
+        "--snapshot-shops",
+        help="Comma-separated shops for latest snapshot/jsonl artifacts.",
+    ),
+    max_recent_seconds: int = typer.Option(
+        300,
+        "--max-recent-seconds",
+        help="Recent import threshold in seconds.",
+    ),
+    suspicious_ttl_seconds: int = typer.Option(
+        86400,
+        "--suspicious-ttl-seconds",
+        help="TTL warning threshold in seconds.",
+    ),
+    session_output_path: str | None = typer.Option(
+        None,
+        "--session-output-path",
+        help="watch_import_session artifact path override.",
+    ),
+    events_output_path: str | None = typer.Option(
+        None,
+        "--events-output-path",
+        help="watch_import_events artifact path override.",
+    ),
+) -> None:
+    _maybe_load_env_file(env_file)
+    previous_env = _set_phase1_profile_overrides(
+        database_url=database_url,
+        shops_config_path=shops_config_path,
+    )
+    try:
+        _get_shop_or_exit(shop)
+        valid_shop_keys = {row.shop_key for row in _load_shops_or_exit()}
+        snapshot_keys = [
+            key for key in _parse_shop_keys_csv(snapshot_shops) if key in valid_shop_keys
+        ]
+        if shop not in snapshot_keys:
+            snapshot_keys.insert(0, shop)
+        if not snapshot_keys:
+            snapshot_keys = [shop]
+        watch_info = _run_watch_import_session(
+            shop=shop,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+            max_recent_seconds=max_recent_seconds,
+            suspicious_ttl_seconds=suspicious_ttl_seconds,
+            snapshot_shop_keys=snapshot_keys,
+            session_output_path=Path(session_output_path) if session_output_path else None,
+            events_output_path=Path(events_output_path) if events_output_path else None,
+        )
+        session_payload = watch_info.get("session") if isinstance(watch_info.get("session"), dict) else {}
+        detected_import = (
+            watch_info.get("detected_import")
+            if isinstance(watch_info.get("detected_import"), dict)
+            else None
+        )
+        print(
+            "ops_phase1_token_watch_import "
+            f"shop={shop} "
+            f"detected_new_import={session_payload.get('detected_new_import')} "
+            f"elapsed_seconds={session_payload.get('elapsed_seconds')} "
+            f"provenance_kind={detected_import.get('provenance_kind') if detected_import else '-'} "
+            f"provenance_confidence={detected_import.get('provenance_confidence') if detected_import else '-'} "
+            f"session_path={watch_info.get('session_path')} "
+            f"events_path={watch_info.get('events_path')}"
+        )
+    finally:
+        _restore_phase1_profile_overrides(previous_env)
+
+
+@ops_phase1_auth_app.command("compare-back-to-back")
+def ops_phase1_auth_compare_back_to_back(
+    shop: str = typer.Option(..., "--shop", "--shop-key", help="Shop key"),
+    env_file: str | None = typer.Option(None, "--env-file", help="Env file path"),
+    allow_network: bool = typer.Option(
+        False,
+        "--allow-network/--no-allow-network",
+        help="Allow external Shopee API calls.",
+    ),
+    runtime_out: str | None = typer.Option(
+        None,
+        "--runtime-out",
+        help="Runtime identity artifact path override.",
+    ),
+    compare_out: str | None = typer.Option(
+        None,
+        "--compare-out",
+        help="Compare artifact path override.",
+    ),
+    trace_out: str | None = typer.Option(
+        None,
+        "--trace-out",
+        help="Deployed entrypoint trace path override.",
+    ),
+) -> None:
+    _maybe_load_env_file(env_file)
+    _get_shop_or_exit(shop)
+    allow_network_effective = allow_network or (
+        os.environ.get("ALLOW_NETWORK", "").strip().lower() in {"1", "true", "yes"}
+    )
+
+    from .returns_reviews import task004_cli as rr_task004
+
+    artifacts_root = Path("return_and_review") / "collaboration" / "artifacts"
+    runtime_path = Path(runtime_out) if runtime_out else artifacts_root / f"runtime_identity_maincli_{shop}.json"
+    compare_path = Path(compare_out) if compare_out else artifacts_root / f"auth_compare_maincli_{shop}.json"
+    trace_path = Path(trace_out) if trace_out else artifacts_root / "deployed_entrypoint_trace.md"
+
+    result = rr_task004.run_auth_compare(
+        shop_key=shop,
+        allow_network=allow_network_effective,
+        runtime_output_path=runtime_path,
+        compare_output_path=compare_path,
+        trace_output_path=trace_path,
+        invoked_entrypoint="dotori_shopee_automation.cli ops phase1 auth compare-back-to-back",
+        commandline=" ".join(sys.argv),
+        env_file_hint=env_file,
+    )
+    case_id = str(result.get("result_case") or "UNRESOLVED")
+    compare_payload = result.get("compare") if isinstance(result.get("compare"), dict) else {}
+    calls = compare_payload.get("calls") if isinstance(compare_payload.get("calls"), list) else []
+    ads_row = next(
+        (
+            row
+            for row in calls
+            if isinstance(row, dict) and row.get("path") == "/api/v2/ads/get_total_balance"
+        ),
+        {},
+    )
+    print(
+        "ops_phase1_auth_compare_back_to_back "
+        f"shop={shop} "
+        f"allow_network={1 if allow_network_effective else 0} "
+        f"ads_status={ads_row.get('http_status')} "
+        f"case={case_id} "
+        f"runtime_path={result.get('runtime_path')} "
+        f"compare_path={result.get('compare_path')} "
+        f"trace_path={result.get('trace_path')}"
+    )
+    if case_id == "UNRESOLVED":
+        raise typer.Exit(code=2)
+
+
+@ops_phase1_auth_app.command("compare-after-latest-import")
+def ops_phase1_auth_compare_after_latest_import(
+    shop: str = typer.Option(..., "--shop", "--shop-key", help="Shop key"),
+    env_file: str | None = typer.Option(
+        "collaboration/env/.env.phase1.local",
+        "--env-file",
+        help="Env file path",
+    ),
+    database_url: str = typer.Option(
+        "sqlite:///./collaboration/phase1_live.db",
+        "--database-url",
+        help="Database URL override for deployed-equivalent compare.",
+    ),
+    shops_config_path: str = typer.Option(
+        "./collaboration/shops_samord_minmin.yaml",
+        "--shops-config-path",
+        help="Shops config path override for deployed-equivalent compare.",
+    ),
+    snapshot_shops: str = typer.Option(
+        "samord,minmin",
+        "--snapshot-shops",
+        help="Comma-separated shops for latest_token_imports_sanitized snapshot.",
+    ),
+    max_age_seconds: int = typer.Option(
+        300,
+        "--max-age-seconds",
+        help="Maximum age for latest import in seconds.",
+    ),
+    require_provenance: str = typer.Option(
+        "real_gas",
+        "--require-provenance",
+        help="Required provenance_kind to run live compare.",
+    ),
+    min_ttl_seconds: int = typer.Option(
+        120,
+        "--min-ttl-seconds",
+        help="Minimum TTL required to run live compare.",
+    ),
+    suspicious_ttl_seconds: int = typer.Option(
+        86400,
+        "--suspicious-ttl-seconds",
+        help="TTL warning threshold in seconds.",
+    ),
+    allow_network: bool = typer.Option(
+        False,
+        "--allow-network/--no-allow-network",
+        help="Allow external Shopee API calls.",
+    ),
+    runtime_out: str | None = typer.Option(
+        None,
+        "--runtime-out",
+        help="Runtime identity artifact path override.",
+    ),
+    deployed_compare_out: str | None = typer.Option(
+        None,
+        "--deployed-compare-out",
+        help="Deployed profile compare artifact path override.",
+    ),
+    output_path: str | None = typer.Option(
+        None,
+        "--output-path",
+        help="compare-after-latest-import artifact path override.",
+    ),
+) -> None:
+    _maybe_load_env_file(env_file)
+    previous_env = _set_phase1_profile_overrides(
+        database_url=database_url,
+        shops_config_path=shops_config_path,
+    )
+    try:
+        _get_shop_or_exit(shop)
+        valid_shop_keys = {row.shop_key for row in _load_shops_or_exit()}
+        snapshot_keys = [
+            key for key in _parse_shop_keys_csv(snapshot_shops) if key in valid_shop_keys
+        ]
+        if shop not in snapshot_keys:
+            snapshot_keys.insert(0, shop)
+        if not snapshot_keys:
+            snapshot_keys = [shop]
+
+        latest_info = _write_latest_import_artifacts(
+            shop_key=shop,
+            snapshot_shop_keys=snapshot_keys,
+            max_recent_seconds=max_age_seconds,
+            suspicious_ttl_seconds=suspicious_ttl_seconds,
+        )
+        inspection = latest_info.get("inspection") if isinstance(latest_info.get("inspection"), dict) else {}
+        warnings_payload = (
+            latest_info.get("warnings_payload")
+            if isinstance(latest_info.get("warnings_payload"), dict)
+            else {}
+        )
+        provenance_payload = (
+            latest_info.get("provenance")
+            if isinstance(latest_info.get("provenance"), dict)
+            else {}
+        )
+
+        artifacts_dir = token_import_artifact_root()
+        runtime_path = (
+            Path(runtime_out)
+            if runtime_out
+            else artifacts_dir / f"runtime_identity_deployed_equiv_{shop}.json"
+        )
+        deployed_compare_path = (
+            Path(deployed_compare_out)
+            if deployed_compare_out
+            else artifacts_dir / f"deployed_profile_compare_{shop}.json"
+        )
+        compare_after_path = (
+            Path(output_path)
+            if output_path
+            else artifacts_dir / f"compare_after_latest_import_{shop}.json"
+        )
+
+        blocked_reasons: list[str] = []
+        actual_kind = str(inspection.get("provenance_kind") or "").strip().lower()
+        required_kind = str(require_provenance or "").strip().lower()
+        accepted_kinds: set[str]
+        if required_kind == "real_gas":
+            accepted_kinds = {
+                "real_gas",
+                "endpoint_http_probable_real_live",
+                "endpoint_http_probable_gas",
+            }
+        elif required_kind == "endpoint_http":
+            accepted_kinds = {
+                "endpoint_http_probable_real_live",
+                "endpoint_http_probable_gas",
+                "endpoint_http_unknown",
+            }
+        elif required_kind:
+            accepted_kinds = {required_kind}
+        else:
+            accepted_kinds = set()
+        if accepted_kinds and actual_kind not in accepted_kinds:
+            blocked_reasons.append(
+                f"provenance_kind_mismatch actual={actual_kind or '-'} required={required_kind}"
+            )
+        import_age_seconds = _int_or_none(inspection.get("import_age_seconds"))
+        if import_age_seconds is None:
+            blocked_reasons.append("import_age_missing")
+        elif import_age_seconds > int(max_age_seconds):
+            blocked_reasons.append(
+                f"import_too_old age={import_age_seconds}s max_age={int(max_age_seconds)}s"
+            )
+        ttl_now = _int_or_none(inspection.get("ttl_seconds_now"))
+        if ttl_now is None:
+            blocked_reasons.append("ttl_seconds_now_missing")
+        else:
+            if ttl_now <= 0:
+                blocked_reasons.append(f"ttl_non_positive ttl={ttl_now}s")
+            if ttl_now < int(min_ttl_seconds):
+                blocked_reasons.append(
+                    f"ttl_too_short ttl={ttl_now}s min_ttl={int(min_ttl_seconds)}s"
+                )
+
+        allow_network_effective = allow_network or (
+            os.environ.get("ALLOW_NETWORK", "").strip().lower() in {"1", "true", "yes"}
+        )
+        profile_parity = {
+            "mode": "near_equivalent",
+            "exact_match": 0,
+            "entrypoint": "dotori_shopee_automation.cli",
+            "required": {
+                "database_url": "sqlite:///./collaboration/phase1_live.db",
+                "shops_config_path": "./collaboration/shops_samord_minmin.yaml",
+                "env_file": "collaboration/env/.env.phase1.local",
+            },
+            "effective": {
+                "database_url": os.environ.get("DATABASE_URL"),
+                "shops_config_path": os.environ.get("SHOPS_CONFIG_PATH"),
+                "env_file": env_file,
+            },
+            "remaining_differences": [
+                "interactive shell execution (not systemd/windows task wrapper)",
+                "host-level EnvironmentFile path may differ from production",
+            ],
+        }
+
+        payload: dict[str, Any] = {
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "shop_key": shop,
+            "blocked": int(bool(blocked_reasons)),
+            "blocked_reasons": blocked_reasons,
+            "require_provenance": required_kind or None,
+            "max_age_seconds": int(max_age_seconds),
+            "min_ttl_seconds": int(min_ttl_seconds),
+            "allow_network_effective": int(allow_network_effective),
+            "latest_import": inspection,
+            "provenance": provenance_payload,
+            "sanity_warnings": warnings_payload.get("warnings"),
+            "sanity_warning_count": warnings_payload.get("warning_count"),
+            "profile_parity": profile_parity,
+            "latest_import_artifacts": {
+                "inspection_path": latest_info.get("inspection_path"),
+                "latest_ingress_path": latest_info.get("latest_ingress_path"),
+                "ingress_jsonl_path": latest_info.get("ingress_jsonl_path"),
+                "provenance_path": latest_info.get("provenance_path"),
+                "warnings_path": latest_info.get("warnings_path"),
+                "snapshot_path": latest_info.get("snapshot_path"),
+            },
+            "runtime_identity_path": str(runtime_path),
+            "deployed_compare_path": str(deployed_compare_path),
+        }
+
+        if blocked_reasons:
+            payload["compare_executed"] = 0
+            payload["result_case"] = "CASE 3"
+            payload["result_case_reason"] = (
+                "real_gas latest import cannot be confirmed or freshness/ttl guard failed."
+            )
+            saved = write_token_import_json(compare_after_path, payload)
+            write_token_import_json(deployed_compare_path, payload)
+            print(
+                "ops_phase1_auth_compare_after_latest_import "
+                f"shop={shop} blocked=1 case=CASE_3 "
+                f"reasons={';'.join(blocked_reasons)} "
+                f"compare_after_path={saved} deployed_compare_path={deployed_compare_path}"
+            )
+            return
+
+        from .returns_reviews import task004_cli as rr_task004
+
+        run_info = rr_task004.run_auth_compare(
+            shop_key=shop,
+            allow_network=allow_network_effective,
+            runtime_output_path=runtime_path,
+            compare_output_path=deployed_compare_path,
+            trace_output_path=artifacts_dir / "deployed_entrypoint_trace.md",
+            invoked_entrypoint="dotori_shopee_automation.cli ops phase1 auth compare-after-latest-import",
+            commandline=" ".join(sys.argv),
+            env_file_hint=env_file,
+        )
+        compare_payload = run_info.get("compare") if isinstance(run_info.get("compare"), dict) else {}
+        calls = compare_payload.get("calls") if isinstance(compare_payload.get("calls"), list) else []
+        path_status: dict[str, int | None] = {}
+        for row in calls:
+            if isinstance(row, dict):
+                path_status[str(row.get("path"))] = _int_or_none(row.get("http_status"))
+        ads_status = path_status.get("/api/v2/ads/get_total_balance")
+        baseline_statuses = [
+            path_status.get("/api/v2/shop/get_shop_info"),
+            path_status.get("/api/v2/shop/get_profile"),
+        ]
+        if ads_status == 200 and baseline_statuses == [403, 403]:
+            final_case = "CASE 1"
+            final_reason = "real_gas latest import + deployed profile compare => ads 200 and baseline 403."
+        elif ads_status == 403 and baseline_statuses == [403, 403]:
+            final_case = "CASE 2"
+            final_reason = "real_gas latest import + deployed profile compare => ads/baseline all 403."
+        else:
+            final_case = "UNRESOLVED"
+            final_reason = "status pattern does not match CASE 1/2 exactly."
+
+        payload["compare_executed"] = 1
+        payload["result_case"] = final_case
+        payload["result_case_reason"] = final_reason
+        payload["ads_status"] = ads_status
+        payload["baseline_statuses"] = {
+            "get_shop_info": baseline_statuses[0],
+            "get_profile": baseline_statuses[1],
+        }
+        payload["rr_compare_case"] = compare_payload.get("result_case")
+        payload["rr_compare_case_reason"] = compare_payload.get("result_case_reason")
+        payload["runtime_identity_path"] = run_info.get("runtime_path")
+        payload["deployed_compare_path"] = run_info.get("compare_path")
+        payload["deployed_trace_path"] = run_info.get("trace_path")
+        payload["compare"] = compare_payload
+        saved = write_token_import_json(compare_after_path, payload)
+        print(
+            "ops_phase1_auth_compare_after_latest_import "
+            f"shop={shop} blocked=0 case={final_case.replace(' ', '_')} "
+            f"ads_status={ads_status} "
+            f"baseline_shop_info={baseline_statuses[0]} baseline_profile={baseline_statuses[1]} "
+            f"compare_after_path={saved} deployed_compare_path={run_info.get('compare_path')} "
+            f"runtime_path={run_info.get('runtime_path')}"
+        )
+    finally:
+        _restore_phase1_profile_overrides(previous_env)
+
+
+@ops_phase1_auth_app.command("compare-after-detected-import")
+def ops_phase1_auth_compare_after_detected_import(
+    shop: str = typer.Option(..., "--shop", "--shop-key", help="Shop key"),
+    watch_timeout: int = typer.Option(
+        900,
+        "--watch-timeout",
+        help="Watch timeout in seconds while waiting for a new import.",
+    ),
+    poll_seconds: int = typer.Option(
+        5,
+        "--poll-seconds",
+        help="Watch poll interval in seconds.",
+    ),
+    max_import_age: int = typer.Option(
+        300,
+        "--max-import-age",
+        help="Maximum import age in seconds for compare execution.",
+    ),
+    min_ttl_seconds: int = typer.Option(
+        120,
+        "--min-ttl-seconds",
+        help="Minimum TTL required to run compare.",
+    ),
+    suspicious_ttl_seconds: int = typer.Option(
+        86400,
+        "--suspicious-ttl-seconds",
+        help="TTL warning threshold in seconds.",
+    ),
+    allow_network: bool = typer.Option(
+        False,
+        "--allow-network/--no-allow-network",
+        help="Allow external Shopee API calls.",
+    ),
+    env_file: str | None = typer.Option(
+        "collaboration/env/.env.phase1.local",
+        "--env-file",
+        help="Env file path",
+    ),
+    database_url: str = typer.Option(
+        "sqlite:///./collaboration/phase1_live.db",
+        "--database-url",
+        help="Database URL override for deployed-equivalent compare.",
+    ),
+    shops_config_path: str = typer.Option(
+        "./collaboration/shops_samord_minmin.yaml",
+        "--shops-config-path",
+        help="Shops config path override for deployed-equivalent compare.",
+    ),
+    snapshot_shops: str = typer.Option(
+        "samord,minmin",
+        "--snapshot-shops",
+        help="Comma-separated shops for latest snapshot/jsonl artifacts.",
+    ),
+    watch_session_output_path: str | None = typer.Option(
+        None,
+        "--watch-session-output-path",
+        help="watch_import_session artifact path override.",
+    ),
+    watch_events_output_path: str | None = typer.Option(
+        None,
+        "--watch-events-output-path",
+        help="watch_import_events artifact path override.",
+    ),
+    runtime_out: str | None = typer.Option(
+        None,
+        "--runtime-out",
+        help="Runtime identity artifact path override.",
+    ),
+    deployed_compare_out: str | None = typer.Option(
+        None,
+        "--deployed-compare-out",
+        help="Deployed profile compare artifact path override.",
+    ),
+    output_path: str | None = typer.Option(
+        None,
+        "--output-path",
+        help="compare_after_detected_import artifact path override.",
+    ),
+) -> None:
+    _maybe_load_env_file(env_file)
+    previous_env = _set_phase1_profile_overrides(
+        database_url=database_url,
+        shops_config_path=shops_config_path,
+    )
+    try:
+        _get_shop_or_exit(shop)
+        valid_shop_keys = {row.shop_key for row in _load_shops_or_exit()}
+        snapshot_keys = [
+            key for key in _parse_shop_keys_csv(snapshot_shops) if key in valid_shop_keys
+        ]
+        if shop not in snapshot_keys:
+            snapshot_keys.insert(0, shop)
+        if not snapshot_keys:
+            snapshot_keys = [shop]
+
+        watch_info = _run_watch_import_session(
+            shop=shop,
+            timeout_seconds=watch_timeout,
+            poll_seconds=poll_seconds,
+            max_recent_seconds=max_import_age,
+            suspicious_ttl_seconds=suspicious_ttl_seconds,
+            snapshot_shop_keys=snapshot_keys,
+            session_output_path=Path(watch_session_output_path) if watch_session_output_path else None,
+            events_output_path=Path(watch_events_output_path) if watch_events_output_path else None,
+        )
+        watch_session = watch_info.get("session") if isinstance(watch_info.get("session"), dict) else {}
+        detected_import = (
+            watch_info.get("detected_import")
+            if isinstance(watch_info.get("detected_import"), dict)
+            else None
+        )
+
+        artifacts_dir = token_import_artifact_root()
+        runtime_path = (
+            Path(runtime_out)
+            if runtime_out
+            else artifacts_dir / f"runtime_identity_deployed_equiv_{shop}.json"
+        )
+        deployed_compare_path = (
+            Path(deployed_compare_out)
+            if deployed_compare_out
+            else artifacts_dir / f"deployed_profile_compare_{shop}.json"
+        )
+        compare_after_path = (
+            Path(output_path)
+            if output_path
+            else artifacts_dir / f"compare_after_detected_import_{shop}.json"
+        )
+        allow_network_effective = allow_network or (
+            os.environ.get("ALLOW_NETWORK", "").strip().lower() in {"1", "true", "yes"}
+        )
+        profile_parity = {
+            "mode": "near_equivalent",
+            "exact_match": 0,
+            "entrypoint": "dotori_shopee_automation.cli",
+            "required": {
+                "database_url": "sqlite:///./collaboration/phase1_live.db",
+                "shops_config_path": "./collaboration/shops_samord_minmin.yaml",
+                "env_file": "collaboration/env/.env.phase1.local",
+            },
+            "effective": {
+                "database_url": os.environ.get("DATABASE_URL"),
+                "shops_config_path": os.environ.get("SHOPS_CONFIG_PATH"),
+                "env_file": env_file,
+            },
+            "remaining_differences": [
+                "interactive shell execution (not systemd/windows task wrapper)",
+                "host-level EnvironmentFile path may differ from production",
+            ],
+        }
+
+        payload: dict[str, Any] = {
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "shop_key": shop,
+            "watch": {
+                "timeout_seconds": int(watch_timeout),
+                "poll_seconds": int(poll_seconds),
+                "session_path": watch_info.get("session_path"),
+                "events_path": watch_info.get("events_path"),
+                "detected_new_import": watch_session.get("detected_new_import"),
+            },
+            "detected_import": detected_import,
+            "max_import_age": int(max_import_age),
+            "min_ttl_seconds": int(min_ttl_seconds),
+            "allow_network_effective": int(allow_network_effective),
+            "profile_parity": profile_parity,
+            "runtime_identity_path": str(runtime_path),
+            "deployed_compare_path": str(deployed_compare_path),
+        }
+
+        if detected_import is None:
+            payload["compare_executed"] = 0
+            payload["blocked"] = 1
+            payload["blocked_reasons"] = ["no_new_import_detected"]
+            payload["result_case"] = "CASE 4"
+            payload["result_case_reason"] = (
+                "watch timeout elapsed without detecting a new import event/fingerprint."
+            )
+            saved = write_token_import_json(compare_after_path, payload)
+            print(
+                "ops_phase1_auth_compare_after_detected_import "
+                f"shop={shop} blocked=1 case=CASE_4 "
+                f"reason=no_new_import_detected "
+                f"output_path={saved}"
+            )
+            return
+
+        blocked_reasons: list[str] = []
+        detected_kind = str(detected_import.get("provenance_kind") or "").strip().lower()
+        detected_confidence = str(detected_import.get("provenance_confidence") or "").strip().lower()
+        ingress_kind = str(detected_import.get("ingress_kind") or "").strip().lower()
+        if detected_kind in {"fixture", "testclient", "manual_local"}:
+            blocked_reasons.append(f"import_detected_but_non_live_kind kind={detected_kind}")
+        if ingress_kind != "http_endpoint":
+            blocked_reasons.append(f"import_detected_but_non_http_endpoint ingress_kind={ingress_kind or '-'}")
+        if not _is_live_provenance_kind(detected_kind):
+            blocked_reasons.append(f"import_detected_but_provenance_kind_not_live kind={detected_kind or '-'}")
+        if detected_confidence == "weak":
+            blocked_reasons.append("import_detected_but_provenance_confidence_weak")
+
+        import_age_seconds = _int_or_none(detected_import.get("import_age_seconds"))
+        if import_age_seconds is None:
+            blocked_reasons.append("import_detected_but_age_missing")
+        elif import_age_seconds > int(max_import_age):
+            blocked_reasons.append(
+                f"import_detected_but_too_old age={import_age_seconds}s max_age={int(max_import_age)}s"
+            )
+        ttl_now = _int_or_none(detected_import.get("ttl_seconds_now"))
+        if ttl_now is None:
+            blocked_reasons.append("import_detected_but_ttl_missing")
+        else:
+            if ttl_now <= 0:
+                blocked_reasons.append(f"import_detected_but_ttl_non_positive ttl={ttl_now}s")
+            if ttl_now < int(min_ttl_seconds):
+                blocked_reasons.append(
+                    f"import_detected_but_ttl_short ttl={ttl_now}s min_ttl={int(min_ttl_seconds)}s"
+                )
+
+        if blocked_reasons:
+            payload["compare_executed"] = 0
+            payload["blocked"] = 1
+            payload["blocked_reasons"] = blocked_reasons
+            payload["result_case"] = "CASE 3"
+            payload["result_case_reason"] = (
+                "new import was detected but provenance confidence/freshness/ttl gate did not pass."
+            )
+            saved = write_token_import_json(compare_after_path, payload)
+            print(
+                "ops_phase1_auth_compare_after_detected_import "
+                f"shop={shop} blocked=1 case=CASE_3 "
+                f"reasons={';'.join(blocked_reasons)} "
+                f"output_path={saved}"
+            )
+            return
+
+        from .returns_reviews import task004_cli as rr_task004
+
+        run_info = rr_task004.run_auth_compare(
+            shop_key=shop,
+            allow_network=allow_network_effective,
+            runtime_output_path=runtime_path,
+            compare_output_path=deployed_compare_path,
+            trace_output_path=artifacts_dir / "deployed_entrypoint_trace.md",
+            invoked_entrypoint="dotori_shopee_automation.cli ops phase1 auth compare-after-detected-import",
+            commandline=" ".join(sys.argv),
+            env_file_hint=env_file,
+        )
+        compare_payload = run_info.get("compare") if isinstance(run_info.get("compare"), dict) else {}
+        calls = compare_payload.get("calls") if isinstance(compare_payload.get("calls"), list) else []
+        path_status: dict[str, int | None] = {}
+        for row in calls:
+            if isinstance(row, dict):
+                path_status[str(row.get("path"))] = _int_or_none(row.get("http_status"))
+        ads_status = path_status.get("/api/v2/ads/get_total_balance")
+        baseline_statuses = [
+            path_status.get("/api/v2/shop/get_shop_info"),
+            path_status.get("/api/v2/shop/get_profile"),
+        ]
+        if ads_status == 200 and baseline_statuses == [403, 403]:
+            final_case = "CASE 1"
+            final_reason = "detected probable live endpoint import followed by ads=200 and baseline=403."
+        elif ads_status == 403 and baseline_statuses == [403, 403]:
+            final_case = "CASE 2"
+            final_reason = "detected probable live endpoint import followed by ads/baseline all 403."
+        else:
+            final_case = "UNRESOLVED"
+            final_reason = "status pattern does not match CASE 1/2 exactly."
+
+        context = compare_payload.get("context") if isinstance(compare_payload.get("context"), dict) else {}
+        payload["compare_executed"] = 1
+        payload["blocked"] = 0
+        payload["blocked_reasons"] = []
+        payload["result_case"] = final_case
+        payload["result_case_reason"] = final_reason
+        payload["ads_status"] = ads_status
+        payload["baseline_statuses"] = {
+            "get_shop_info": baseline_statuses[0],
+            "get_profile": baseline_statuses[1],
+        }
+        payload["same_token_all_calls"] = context.get("same_token_all_calls")
+        payload["same_shop_all_calls"] = context.get("same_shop_all_calls")
+        payload["same_database_all_calls"] = context.get("same_database_all_calls")
+        payload["rr_compare_case"] = compare_payload.get("result_case")
+        payload["rr_compare_case_reason"] = compare_payload.get("result_case_reason")
+        payload["runtime_identity_path"] = run_info.get("runtime_path")
+        payload["deployed_compare_path"] = run_info.get("compare_path")
+        payload["deployed_trace_path"] = run_info.get("trace_path")
+        payload["compare"] = compare_payload
+        saved = write_token_import_json(compare_after_path, payload)
+        print(
+            "ops_phase1_auth_compare_after_detected_import "
+            f"shop={shop} blocked=0 case={final_case.replace(' ', '_')} "
+            f"ads_status={ads_status} "
+            f"baseline_shop_info={baseline_statuses[0]} baseline_profile={baseline_statuses[1]} "
+            f"output_path={saved}"
+        )
+    finally:
+        _restore_phase1_profile_overrides(previous_env)
 
 
 def _parse_kv_tokens(line: str) -> dict[str, str]:

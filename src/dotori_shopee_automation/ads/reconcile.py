@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import re
 from typing import Any
+import unicodedata
 
 from .metrics import aggregate_metric_rows, build_surface_metrics_snapshot, nullable_decimal, to_decimal
 from .reporting import aggregate_daily_report, report_scope_line, report_surface_metrics
@@ -142,6 +143,9 @@ def _extract_rendered_metrics(report_path: Path) -> tuple[dict[str, Any], str]:
     parsed = _extract_metrics_from_scorecard_table(text)
     if parsed:
         return parsed, "scorecard_table"
+    parsed = _extract_metrics_from_score_matrix_cards(text)
+    if parsed:
+        return parsed, "score_matrix_cards"
     return {}, "unparsable"
 
 
@@ -191,6 +195,41 @@ def _extract_metrics_from_scorecard_table(text: str) -> dict[str, Any]:
             continue
         raw_cell = _strip_tags(matched.group(1))
         out[key] = _parse_metric_text(key, raw_cell)
+    return out
+
+
+def _extract_metrics_from_score_matrix_cards(text: str) -> dict[str, Any]:
+    pair_pattern = re.compile(
+        r"<div[^>]*class=['\"][^'\"]*score-metric[^'\"]*['\"][^>]*>\s*"
+        r"<div[^>]*class=['\"][^'\"]*label[^'\"]*['\"][^>]*>(.*?)</div>\s*"
+        r"<div[^>]*class=['\"][^'\"]*value[^'\"]*['\"][^>]*>(.*?)</div>\s*"
+        r"</div>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    label_map = {
+        "spend": "spend",
+        "chi tieu": "spend",
+        "impressions": "impressions",
+        "hien thi": "impressions",
+        "clicks": "clicks",
+        "click": "clicks",
+        "orders": "orders",
+        "don hang": "orders",
+        "gmv": "gmv",
+        "doanh so": "gmv",
+        "roas": "roas",
+        "ctr": "ctr",
+        "cpc": "cpc",
+        "cvr": "cvr",
+    }
+    out: dict[str, Any] = {}
+    for label_html, value_html in pair_pattern.findall(text):
+        raw_label = _strip_tags(label_html)
+        key = label_map.get(_normalize_label(raw_label))
+        if not key:
+            continue
+        raw_value = _strip_tags(value_html)
+        out[key] = _parse_metric_text(key, raw_value)
     return out
 
 
@@ -353,6 +392,14 @@ def _parse_decimal(value: Any) -> Decimal | None:
 def _strip_tags(value: str) -> str:
     no_tags = re.sub(r"<[^>]+>", " ", value or "")
     return " ".join(no_tags.split())
+
+
+def _normalize_label(value: str) -> str:
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
 
 
 def _parse_metric_text(metric: str, text: str) -> Any:
