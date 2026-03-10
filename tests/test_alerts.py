@@ -267,11 +267,13 @@ def test_alert_message_formats_vnd_without_decimals() -> None:
         meta={
             "current_balance": Decimal("30365.12"),
             "low_threshold": Decimal("50000.00"),
+            "balance_ts": "2026-03-10T04:16:42+07:00",
         },
     )
     message = alert_message(alert)
     assert "so_du_hien_tai=30,365₫" in message
     assert "nguong_canh_bao=50,000₫" in message
+    assert "thoi_diem_so_du=2026-03-10 04:16:42 (GMT+07:00)" in message
 
 
 def test_alert_message_repeat_prefix() -> None:

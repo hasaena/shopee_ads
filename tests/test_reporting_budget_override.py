@@ -25,7 +25,7 @@ def _write_shops(path: Path) -> None:
     )
 
 
-def test_aggregate_daily_report_uses_shop_budget_override_when_snapshot_budget_missing(
+def test_aggregate_daily_report_keeps_budget_unknown_when_snapshot_budget_missing(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -64,11 +64,11 @@ def test_aggregate_daily_report_uses_shop_budget_override_when_snapshot_budget_m
 
         report = aggregate_daily_report(session, "shop_a", date_cls(2026, 2, 16), as_of=None)
 
-    assert report["budget_source"] == "override"
-    assert report["budget_est"] == Decimal("300000")
+    assert report["budget_source"] == "none"
+    assert report["budget_est"] is None
     assert report["campaigns_budgeted"] == 0
-    assert report["scorecard"]["remaining"] == Decimal("180000")
-    assert report["scorecard"]["util_pct"] == Decimal("0.4")
+    assert report["scorecard"]["remaining"] is None
+    assert report["scorecard"]["util_pct"] is None
 
 
 def test_aggregate_daily_report_prefers_snapshot_budget_over_override_and_skips_shop_total(

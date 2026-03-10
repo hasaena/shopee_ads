@@ -106,7 +106,9 @@ def aggregate_daily_report(
         lookback_days=180,
         min_days=45,
     )
-    budget_override = _resolve_shop_budget_override(shop_key)
+    # Do not use configured fallback budgets for report totals.
+    # If API budget is unavailable, keep budget as unknown ("-").
+    budget_override = None
     campaign_budget_rows = _load_campaign_budget_rows(session, shop_key)
     active_campaign_ids = _active_campaign_ids(daily_rows)
     budget_est, campaigns_budgeted, budget_source = _effective_budget_estimate(
@@ -1242,19 +1244,10 @@ def _render_budget_progress(
                 "</small></div>"
             )
 
-    override_budget = _nullable_decimal(budget_override)
-    if (not has_api_budget) and override_budget is not None and override_budget > 0:
-        consumed_total = _safe_div(total_spend, override_budget)
-        lines.append(
-            "<div><strong>Ngân sách shop (cấu hình):</strong> "
-            f"{_fmt_money(override_budget)} | <strong>Đã dùng toàn shop:</strong> {_fmt_money(total_spend)} | "
-            f"<strong>Tỷ lệ dùng:</strong> {_fmt_pct_compact(consumed_total)}"
-            "</div>"
-        )
-
     if not lines:
         lines.append(
-            "<div class='empty'>Chưa tính được tổng ngân sách từ dữ liệu API cho ngày này.</div>"
+            "<div class='empty'><strong>Tổng ngân sách:</strong> - "
+            "(không có dữ liệu API tin cậy cho ngày này).</div>"
         )
     return "\n".join(lines)
 
@@ -1265,8 +1258,6 @@ def _budget_source_label(value: str) -> str:
         return "campaign setting API"
     if key == "snapshot":
         return "snapshot campaign budgets"
-    if key == "override":
-        return "shop config daily_budget_est"
     if key == "none":
         return ""
     return key
@@ -2139,8 +2130,6 @@ def _effective_budget_estimate(
     )
     if snapshot_budget is not None and campaigns_budgeted > 0:
         return snapshot_budget, campaigns_budgeted, "snapshot"
-    if budget_override is not None:
-        return budget_override, 0, "override"
     return None, 0, "none"
 
 

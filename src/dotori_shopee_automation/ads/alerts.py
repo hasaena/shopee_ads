@@ -10,8 +10,13 @@ from sqlalchemy import and_
 from .campaign_labels import resolve_campaign_display_name
 from .incidents import AdsIncident, get_open_incident, open_or_update_incident, resolve_incident
 from .models import AdsAccountBalanceSnapshot, AdsCampaign, AdsCampaignSnapshot
-from .reporting import load_report_totals_source
-from ..config import get_settings, load_shops, resolve_timezone
+try:
+    from .reporting import load_report_totals_source
+except ImportError:
+    # Backward compatibility for older deployed reporting modules.
+    def load_report_totals_source(*args, **kwargs):  # type: ignore[override]
+        return {"totals_source": "unknown", "totals_basis": "unknown"}
+from ..config import get_settings, resolve_timezone
 from ..db import EventLog
 from ..discord_notifier import send as discord_send
 
@@ -80,8 +85,6 @@ def detect_alerts(shop_key: str, now: datetime, session) -> DetectionResult:
         .all()
     )
 
-    shop_budget_override = _resolve_shop_budget_override(shop_key)
-
     campaigns: dict[str, dict[str, Any]] = {}
     for row in rows:
         campaign_id = row[0]
@@ -139,14 +142,6 @@ def detect_alerts(shop_key: str, now: datetime, session) -> DetectionResult:
         budget = entry["daily_budget"]
         if budget is not None:
             budget = _to_decimal(budget)
-        if (
-            budget is None
-            and str(entry.get("campaign_id") or "").strip().upper() == "SHOP_TOTAL"
-            and shop_budget_override is not None
-            and shop_budget_override > 0
-        ):
-            budget = shop_budget_override
-
         spend_today = _to_decimal(latest["spend"])
         impressions_today = int(latest["impressions"])
         clicks_today = int(latest["clicks"])
@@ -701,6 +696,7 @@ def alert_message(alert: ActiveAlert, resolved: bool = False, repeat: bool = Fal
                 _fmt_money(meta.get("low_threshold")),
             )
         )
+        lines.append("thoi_diem_so_du={}".format(_fmt_local_ts(meta.get("balance_ts"))))
         if resolved:
             lines.append("so_du_sau_phuc_hoi={}".format(_fmt_money(meta.get("current_balance"))))
         lines.append("hanh_dong: nap tien vao tai khoan quang cao")
@@ -773,24 +769,6 @@ def _to_decimal(value) -> Decimal:
     return Decimal(str(value))
 
 
-def _resolve_shop_budget_override(shop_key: str) -> Decimal | None:
-    try:
-        shops = load_shops()
-    except Exception:  # noqa: BLE001
-        return None
-    for shop in shops:
-        if shop.shop_key != shop_key:
-            continue
-        raw = getattr(shop, "daily_budget_est", None)
-        if raw is None:
-            return None
-        try:
-            return _to_decimal(raw)
-        except Exception:  # noqa: BLE001
-            return None
-    return None
-
-
 def _fmt_money(value: Decimal | None) -> str:
     if value is None:
         return "-"
@@ -808,6 +786,28 @@ def _fmt_pct(value: Decimal | None) -> str:
     if value is None:
         return "-"
     return f"{Decimal(str(value)).quantize(Decimal('0.01'))}%"
+
+
+def _fmt_local_ts(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return "-"
+        normalized = text.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            return text
+    settings = get_settings()
+    tz = resolve_timezone(settings.timezone)
+    local = _normalize_dt(dt, tz)
+    offset = local.strftime("%z")
+    offset_text = f"GMT{offset[:3]}:{offset[3:]}" if len(offset) == 5 else "GMT+07:00"
+    return f"{local.strftime('%Y-%m-%d %H:%M:%S')} ({offset_text})"
 
 
 def _is_day_boundary_auto_resolve(incident: AdsIncident, now: datetime) -> bool:

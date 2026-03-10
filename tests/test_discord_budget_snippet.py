@@ -83,7 +83,9 @@ def _run_schedule_once(
     )
 
 
-def test_schedule_run_once_logs_budget_snippet_with_override(tmp_path: Path) -> None:
+def test_schedule_run_once_logs_budget_snippet_with_override_config_keeps_unknown_budget(
+    tmp_path: Path,
+) -> None:
     shops_path = tmp_path / "shops_override.yaml"
     _write_shops(shops_path, with_override=True)
     db_path = tmp_path / "override.db"
@@ -103,11 +105,11 @@ def test_schedule_run_once_logs_budget_snippet_with_override(tmp_path: Path) -> 
     assert "phase1_schedule_run_once_ok=1" in result.stdout
     assert (
         "discord_report_budget_snippet_disabled shop=samord kind=final "
-        "reason=hidden_in_report budget_source=override"
+        "reason=hidden_in_report budget_source=none"
     ) in result.stdout
     assert (
         "discord_report_budget_snippet_disabled shop=minmin kind=final "
-        "reason=hidden_in_report budget_source=override"
+        "reason=hidden_in_report budget_source=none"
     ) in result.stdout
 
 
